@@ -10,15 +10,36 @@ const schema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  await requireAdmin();
+  const admin = await requireAdmin();
   const parsed = schema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "Invalid" }, { status: 400 });
   const { userId, action, kyc } = parsed.data;
 
   switch (action) {
-    case "suspend":
+    case "suspend": {
+      // A suspended account cannot authenticate, so suspending yourself or the
+      // last admin locks the platform out of its own admin surface for good.
+      if (userId === admin.id) {
+        return NextResponse.json({ error: "You cannot suspend your own account" }, { status: 400 });
+      }
+      const target = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { role: true },
+      });
+      if (target?.role === "ADMIN") {
+        const remaining = await prisma.user.count({
+          where: { role: "ADMIN", suspendedAt: null, id: { not: userId } },
+        });
+        if (remaining === 0) {
+          return NextResponse.json(
+            { error: "Cannot suspend the last active admin" },
+            { status: 400 }
+          );
+        }
+      }
       await prisma.user.update({ where: { id: userId }, data: { suspendedAt: new Date() } });
       break;
+    }
     case "unsuspend":
       await prisma.user.update({ where: { id: userId }, data: { suspendedAt: null } });
       break;

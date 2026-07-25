@@ -5,6 +5,7 @@
  */
 import { createHash, randomInt } from "node:crypto";
 import { isAwaitingPlayers } from "@gamearena/shared";
+import { cancelTournamentRefunding } from "./bracket";
 import { AccountKeys, InsufficientFundsError, getBalanceTetri } from "./ledger";
 import { registerTournamentEntryIn, settleTournamentIn } from "./money-ops";
 import { prisma } from "./client";
@@ -135,6 +136,13 @@ export async function finalizeTournament(tournamentId: string): Promise<void> {
   const ranked = [...t.entries]
     .filter((e) => e.bestScore != null)
     .sort((a, b) => (b.bestScore ?? 0) - (a.bestScore ?? 0));
+
+  // Nobody posted a score, so there is no contest to settle. Paying nothing out
+  // would sweep every entry fee to rake — refund the field instead.
+  if (ranked.length === 0 && t.entries.length > 0) {
+    await cancelTournamentRefunding(tournamentId);
+    return;
+  }
 
   const structure = t.prizeStructure as { rank: number; shareBps: number }[];
   const prizePool = Math.max(pool, t.guaranteeTetri);

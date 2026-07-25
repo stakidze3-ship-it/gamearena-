@@ -13,7 +13,10 @@ import { useI18n } from "@/lib/i18n";
  * page right after they typed their password.
  */
 function safeNext(raw: string | null): string {
-  if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return "/lobby";
+  if (!raw || !raw.startsWith("/")) return "/lobby";
+  // Reject protocol-relative forms. Browsers normalise a backslash to a slash,
+  // so "/\evil.com" would otherwise leave the site entirely.
+  if (raw.length > 1 && (raw[1] === "/" || raw[1] === "\\")) return "/lobby";
   return raw;
 }
 

@@ -106,11 +106,18 @@ export class MatchRoom {
     }
   }
 
-  /** A human dropped — finalize now so the escrow always resolves. */
+  /**
+   * A human dropped. Detach their socket but let the match run its clock: their
+   * board simply stops scoring, and the opponent keeps every second they are
+   * entitled to. Settling on disconnect would let whoever is ahead close the
+   * socket to bank a win while the other player still had time to catch up.
+   *
+   * Escrow still always resolves — start() is scheduled unconditionally and
+   * arms a hard cutoff that ends the match regardless of who is connected.
+   */
   onDisconnect(userId: string): void {
     const p = this.players.find((x) => x.userId === userId);
     if (p) p.ws = null;
-    if (!this.ended) void this.end();
   }
 
   async end(): Promise<void> {

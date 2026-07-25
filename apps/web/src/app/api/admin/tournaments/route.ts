@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
   advanceKnockout,
-  cancelKnockout,
+  cancelTournamentRefunding,
   finalizeKnockout,
   finalizeTournament,
   generateKnockout,
@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
   if (!t) return NextResponse.json({ error: "Tournament not found" }, { status: 404 });
 
   if (action === "cancel") {
-    await cancelKnockout(tournamentId); // refunds every entry from escrow
+    await cancelTournamentRefunding(tournamentId); // refunds every entry from escrow
     return NextResponse.json({ ok: true, status: "CANCELLED" });
   }
 

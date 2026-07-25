@@ -445,10 +445,10 @@ export async function finalizeKnockout(tournamentId: string): Promise<void> {
 }
 
 /**
- * Cancel a knockout that never reached the minimum field: refund every entry
+ * Cancel a tournament and make every entrant whole: refund the escrowed pool
  * from escrow and mark it cancelled. Idempotent.
  */
-export async function cancelKnockout(tournamentId: string): Promise<void> {
+export async function cancelTournamentRefunding(tournamentId: string): Promise<void> {
   const t = await prisma.tournament.findUnique({
     where: { id: tournamentId },
     include: { entries: true },
