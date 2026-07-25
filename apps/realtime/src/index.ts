@@ -106,6 +106,14 @@ wss.on("connection", (ws, req) => {
   let conn: Conn | null = null;
   const pending: ClientMessage[] = [];
 
+  // A WebSocket is an EventEmitter: an 'error' event with no listener throws,
+  // which takes down the whole process — every live match, every player. A
+  // hostile or malformed frame (e.g. invalid UTF-8 in a text frame) triggers
+  // this at the protocol level, before it ever reaches the message handler.
+  ws.on("error", (err) => {
+    console.error("[realtime] socket error", err);
+  });
+
   ws.on("message", (data) => {
     let msg: ClientMessage;
     try {

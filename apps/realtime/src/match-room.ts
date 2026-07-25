@@ -135,6 +135,7 @@ export class MatchRoom {
     const winner = draw ? null : a.score > b.score ? a : b;
     const aResult = draw ? 0.5 : a.score > b.score ? 1 : 0;
 
+    let settled = true;
     try {
       await prisma.$transaction(async (db) => {
         // ── Glicko-2: update both players for this game ──
@@ -191,30 +192,46 @@ export class MatchRoom {
         }
       });
     } catch (err) {
-      console.error(`[match ${this.matchId}] settlement failed`, err);
+      settled = false;
+      // Escrow is still holding both stakes and the match is still ACTIVE in
+      // the database — this needs a human to reconcile it. Telling the players
+      // a result at this point would be a lie: they may not have been paid.
+      console.error(
+        `[match ${this.matchId}] SETTLEMENT FAILED — escrow unresolved, needs manual reconciliation`,
+        err
+      );
     }
 
     // ── Anti-cheat signals (advisory, human players only) ──
     await this.runAntiCheat();
 
-    const { payoutTetri, rakeTetri } = settlePot(this.potTetri, this.rakeBps);
-    for (const p of this.players) {
-      const opp = this.other(p.userId);
-      const outcome = draw ? "draw" : winner!.userId === p.userId ? "win" : "loss";
-      const net = draw ? 0 : outcome === "win" ? payoutTetri - this.stakeTetri : -this.stakeTetri;
-      send(p.ws, {
-        t: "result",
-        matchId: this.matchId,
-        youScore: p.score,
-        oppScore: opp.score,
-        outcome,
-        stakeTetri: this.stakeTetri,
-        potTetri: this.potTetri,
-        payoutTetri: draw ? this.stakeTetri : payoutTetri,
-        rakeTetri: draw ? 0 : rakeTetri,
-        netTetri: net,
-        seed: this.seed,
-      });
+    if (settled) {
+      const { payoutTetri, rakeTetri } = settlePot(this.potTetri, this.rakeBps);
+      for (const p of this.players) {
+        const opp = this.other(p.userId);
+        const outcome = draw ? "draw" : winner!.userId === p.userId ? "win" : "loss";
+        const net = draw ? 0 : outcome === "win" ? payoutTetri - this.stakeTetri : -this.stakeTetri;
+        send(p.ws, {
+          t: "result",
+          matchId: this.matchId,
+          youScore: p.score,
+          oppScore: opp.score,
+          outcome,
+          stakeTetri: this.stakeTetri,
+          potTetri: this.potTetri,
+          payoutTetri: draw ? this.stakeTetri : payoutTetri,
+          rakeTetri: draw ? 0 : rakeTetri,
+          netTetri: net,
+          seed: this.seed,
+        });
+      }
+    } else {
+      for (const p of this.players) {
+        send(p.ws, {
+          t: "error",
+          message: "Match settlement hit a problem — support will make this right.",
+        });
+      }
     }
 
     this.onCleanup(this.matchId);
