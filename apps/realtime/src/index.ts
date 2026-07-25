@@ -215,6 +215,26 @@ function dequeue(conn: Conn) {
 
 async function handleJoin(conn: Conn, gameKey: string, stakeTetri: number, challengeId?: string) {
   if (conn.state !== "idle") return;
+
+  // A challenge already has an agreed game and stake, set by the server when
+  // it was created — never trust the client's join message for those, or
+  // whoever's "join" happens to arrive second silently dictates the terms for
+  // both players (and could charge the other side far more than they agreed to).
+  if (challengeId) {
+    const challenge = await prisma.challenge.findUnique({ where: { id: challengeId } });
+    if (
+      !challenge ||
+      challenge.status !== "ACCEPTED" ||
+      (challenge.fromUserId !== conn.userId && challenge.toUserId !== conn.userId)
+    ) {
+      return send(conn.ws, { t: "error", message: "Challenge is no longer available" });
+    }
+    const challengeGame = await prisma.game.findUnique({ where: { id: challenge.gameId } });
+    if (!challengeGame) return send(conn.ws, { t: "error", message: "Challenge game unavailable" });
+    gameKey = challengeGame.key;
+    stakeTetri = challenge.stakeTetri;
+  }
+
   if (!getGameDefinition(gameKey)) return send(conn.ws, { t: "error", message: "Unknown game" });
   if (!STAKES_TETRI.includes(stakeTetri as (typeof STAKES_TETRI)[number])) {
     return send(conn.ws, { t: "error", message: "Invalid stake" });
