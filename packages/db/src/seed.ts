@@ -186,13 +186,13 @@ async function main() {
     users.push({ id: created.id, username: created.username });
   }
 
-  // ── Signup credits (₾100 cash + ₾50 vault, minted, dated to signup) ──
+  // ── Signup credits (₾5 cash + ₾50 vault, minted, dated to signup) ──
   for (const u of [...users, { id: admin.id }, { id: bot.id }]) {
     const record = await prisma.user.findUniqueOrThrow({ where: { id: u.id } });
     await grantSignupCredit(u.id, record.createdAt);
     await grantSignupVaultCredit(u.id, record.createdAt);
   }
-  console.log(`✓ ${users.length} demo users + admin + bot, each credited ₾100`);
+  console.log(`✓ ${users.length} demo users + admin + bot, each credited ₾5`);
 
   // ── Two weeks of settled 1v1 matches (full escrow → settle ledger flow) ──
   const existingMatches = await prisma.match.count();
@@ -384,7 +384,7 @@ async function main() {
     await prisma.announcement.create({
       data: {
         title: "Welcome to GameArena · კეთილი იყოს თქვენი მობრძანება",
-        body: "Demo season is live — every new player gets ₾100 in demo credits. Skill decides everything: identical seeds, server-checked scores.",
+        body: "Demo season is live — every new player gets ₾5 in demo credits. Skill decides everything: identical seeds, server-checked scores.",
       },
     });
   }

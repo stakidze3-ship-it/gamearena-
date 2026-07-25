@@ -43,7 +43,7 @@ export async function mintDemoCreditIn(
   });
 }
 
-/** ₾100 demo credit, minted from treasury. Idempotent per user. */
+/** ₾5 demo credit, minted from treasury. Idempotent per user. */
 export async function grantSignupCredit(userId: string, createdAt?: Date) {
   return postTransaction({
     kind: "SIGNUP_CREDIT",

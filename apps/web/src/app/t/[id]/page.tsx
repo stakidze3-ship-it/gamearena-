@@ -126,7 +126,7 @@ export default async function PublicTournamentPage({
           </Link>
           {!session && (
             <p className="mt-3 text-sm text-faint">
-              New here? Signing up takes a moment and comes with ₾100 in demo credits.
+              New here? Signing up takes a moment and comes with ₾5 in demo credits.
             </p>
           )}
         </div>

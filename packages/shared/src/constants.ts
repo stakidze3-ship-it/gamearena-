@@ -31,8 +31,8 @@ export function settlePot(potTetri: number, rakeBps: number): { payoutTetri: num
   return { payoutTetri: potTetri - rakeTetri, rakeTetri };
 }
 
-/** Demo credit granted on signup: ₾100. */
-export const SIGNUP_CREDIT_TETRI = lariToTetri(100);
+/** Demo credit granted on signup: ₾5. */
+export const SIGNUP_CREDIT_TETRI = lariToTetri(5);
 
 /** Blitz entry options, in tetri. */
 export const BLITZ_ENTRIES_TETRI = [100, 200, 500] as const;

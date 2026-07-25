@@ -125,7 +125,7 @@ async function registerAccount(index: number): Promise<Player> {
   };
 }
 
-/** Trim the signup bonus down to exactly one entry fee. */
+/** Normalise a wallet to exactly one entry fee, whatever signup granted. */
 async function fundExactly(player: Player, tetri: number) {
   const current = await getBalanceTetri(prisma, AccountKeys.userCash(player.userId));
   const delta = current - tetri;
