@@ -1,0 +1,23 @@
+{
+  "name": "@gamearena/realtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@gamearena/db": "*",
+    "@gamearena/games": "*",
+    "@gamearena/shared": "*",
+    "dotenv": "^16.4.5",
+    "ioredis": "^5.4.1",
+    "jose": "^6.0.10",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.12",
+    "tsx": "^4.19.0"
+  }
+}

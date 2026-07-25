@@ -1,0 +1,529 @@
+// GameArena — full platform schema.
+// Money is ALWAYS integer tetri (1 GEL = 100 tetri). Never floats.
+// Every tetri that moves goes through LedgerTransaction/LedgerEntry (double-entry, zero-sum).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────── Users ───────────────────────────────
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum KycStatus {
+  NONE
+  PENDING
+  VERIFIED
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  username      String    @unique
+  usernameLower String    @unique
+  passwordHash  String
+  role          Role      @default(USER)
+  kycStatus     KycStatus @default(NONE)
+  isBot         Boolean   @default(false)
+
+  // Safety / anti-cheat
+  suspendedAt DateTime?
+  payoutHold  Boolean   @default(false) // payouts frozen pending review
+
+  // Responsible gaming (exists from day one, demo mode included)
+  selfExcludedUntil      DateTime?
+  dailyDepositLimitTetri Int?
+
+  // Referral
+  referralCode String  @unique
+  referredById String?
+  referredBy   User?   @relation("Referrals", fields: [referredById], references: [id])
+  referrals    User[]  @relation("Referrals")
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  lastSeenAt DateTime?
+
+  accounts          Account[]
+  ratings           RatingState[]
+  matchPlayers      MatchPlayer[]
+  blitzRuns         BlitzRun[]
+  devices           DeviceFingerprint[]
+  reviewCases       ReviewCase[]
+  tournamentEntries TournamentEntry[]
+  vaultOpens        VaultOpen[]
+  loyaltyWeeks      LoyaltyWeek[]
+  friendshipsOut    Friendship[]        @relation("FriendOut")
+  friendshipsIn     Friendship[]        @relation("FriendIn")
+  challengesOut     Challenge[]         @relation("ChallengeOut")
+  challengesIn      Challenge[]         @relation("ChallengeIn")
+  wonMatches        Match[]             @relation("MatchWinner")
+}
+
+// ─────────────────────────── Money: double-entry ledger ───────────────────────────
+// Account.key is the canonical identity:
+//   "USER_CASH:<userId>"  "USER_VAULT:<userId>"  "ESCROW_MATCH:<matchId>"
+//   "ESCROW_TOURNAMENT:<tournamentId>"  "SYS_TREASURY"  "SYS_RAKE"  "SYS_PROMO"
+// Sum of ALL LedgerEntry.amountTetri across the database is ALWAYS 0.
+
+enum AccountType {
+  USER_CASH
+  USER_VAULT
+  ESCROW_MATCH
+  ESCROW_TOURNAMENT
+  SYS_TREASURY // issues demo credits (goes negative — the "mint")
+  SYS_RAKE     // platform revenue
+  SYS_PROMO    // funds bonuses/rakeback
+}
+
+model Account {
+  id           String      @id @default(cuid())
+  key          String      @unique
+  type         AccountType
+  userId       String?
+  user         User?       @relation(fields: [userId], references: [id])
+  matchId      String?
+  tournamentId String?
+  // Cached balance; ALWAYS updated inside the same DB transaction as its entries.
+  // Invariant (checked by ledger:check): balanceTetri == SUM(entries.amountTetri).
+  balanceTetri Int         @default(0)
+  createdAt    DateTime    @default(now())
+
+  entries LedgerEntry[]
+
+  @@index([type])
+  @@index([userId])
+}
+
+enum TxKind {
+  SIGNUP_CREDIT
+  MATCH_STAKE
+  MATCH_PAYOUT // settlement: escrow → winner + rake, one atomic tx
+  MATCH_REFUND
+  BLITZ_ENTRY
+  BLITZ_PAYOUT
+  RAKEBACK
+  BONUS_CREDIT
+  VAULT_OPEN
+  VAULT_PRIZE
+  TOURNAMENT_ENTRY
+  TOURNAMENT_PRIZE
+  DEPOSIT
+  WITHDRAWAL
+  ADJUSTMENT
+}
+
+model LedgerTransaction {
+  id             String   @id @default(cuid())
+  kind           TxKind
+  memo           String?
+  refType        String? // "match" | "blitz" | "tournament" | "vault" | ...
+  refId          String?
+  idempotencyKey String?  @unique
+  createdAt      DateTime @default(now())
+
+  entries LedgerEntry[]
+
+  @@index([kind, createdAt])
+  @@index([refType, refId])
+}
+
+model LedgerEntry {
+  id          String            @id @default(cuid())
+  txId        String
+  tx          LedgerTransaction @relation(fields: [txId], references: [id])
+  accountId   String
+  account     Account           @relation(fields: [accountId], references: [id])
+  amountTetri Int // signed; positive credits the account
+  createdAt   DateTime          @default(now())
+
+  @@index([accountId, createdAt])
+  @@index([txId])
+}
+
+// ─────────────────────────────── Games ───────────────────────────────
+
+model Game {
+  id        String  @id @default(cuid())
+  key       String  @unique // "block-blast" | "bricks-breaker"
+  name      String
+  tagline   String?
+  durationS Int
+  enabled   Boolean @default(true)
+
+  matches      Match[]
+  blitzConfigs BlitzConfig[]
+  blitzRuns    BlitzRun[]
+  ratings      RatingState[]
+  tournaments  Tournament[]
+}
+
+// ─────────────────────────────── Matches (1v1) ───────────────────────────────
+
+enum MatchStatus {
+  WAITING   // created, waiting for second player / countdown
+  ACTIVE    // both playing
+  SETTLED   // escrow paid out
+  CANCELLED // refunded
+  HOLD      // anti-cheat hold — escrow frozen pending review
+}
+
+model Match {
+  id         String      @id @default(cuid())
+  gameId     String
+  game       Game        @relation(fields: [gameId], references: [id])
+  stakeTetri Int
+  rakeBps    Int
+  potTetri   Int
+  // Provably fair: hash published to both clients BEFORE play; seed revealed after.
+  seed       String
+  seedHash   String
+  status     MatchStatus @default(WAITING)
+  isDemo     Boolean     @default(true) // demo-credit match (bots allowed only here)
+
+  winnerUserId String?
+  winner       User?     @relation("MatchWinner", fields: [winnerUserId], references: [id])
+  isDraw       Boolean   @default(false)
+
+  createdAt DateTime  @default(now())
+  startedAt DateTime?
+  endedAt   DateTime?
+  settledAt DateTime?
+
+  players MatchPlayer[]
+
+  @@index([status, createdAt])
+  @@index([gameId, createdAt])
+}
+
+model MatchPlayer {
+  matchId      String
+  match        Match   @relation(fields: [matchId], references: [id])
+  userId       String
+  user         User    @relation(fields: [userId], references: [id])
+  // Score computed by the SERVER by replaying inputs. Client scores are ignored.
+  serverScore  Int?
+  inputLog     Json? // full input stream — the replay
+  inputCount   Int     @default(0)
+  ratingBefore Float?
+  ratingAfter  Float?
+  flagged      Boolean @default(false) // input-timing anomaly
+
+  @@id([matchId, userId])
+  @@index([userId])
+}
+
+// ─────────────────────────────── Blitz (solo) ───────────────────────────────
+
+model BlitzConfig {
+  id             String   @id @default(cuid())
+  gameId         String
+  game           Game     @relation(fields: [gameId], references: [id])
+  version        Int
+  breakEvenScore Int // score at which multiplier = 1.0x
+  zeroScore      Int // below this → payout 0
+  // Piecewise-linear curve: [{ score, multBps }] sorted by score. 10000 bps = 1.0x.
+  curve          Json
+  maxMultBps     Int      @default(25000)
+  active         Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  runs BlitzRun[]
+
+  @@unique([gameId, version])
+}
+
+enum BlitzRunStatus {
+  PENDING // entry paid, seed issued, not yet played
+  SETTLED
+  EXPIRED // never played within window → entry kept (rare; UI prevents)
+}
+
+model BlitzRun {
+  id          String         @id @default(cuid())
+  userId      String
+  user        User           @relation(fields: [userId], references: [id])
+  gameId      String
+  game        Game           @relation(fields: [gameId], references: [id])
+  configId    String
+  config      BlitzConfig    @relation(fields: [configId], references: [id])
+  entryTetri  Int
+  seed        String
+  seedHash    String
+  status      BlitzRunStatus @default(PENDING)
+  serverScore Int?
+  multBps     Int?
+  payoutTetri Int?
+  inputLog    Json?
+  inputCount  Int            @default(0)
+  createdAt   DateTime       @default(now())
+  settledAt   DateTime?
+
+  @@index([gameId, status, createdAt]) // score-distribution queries for calibration
+  @@index([userId, createdAt])
+}
+
+// ─────────────────────────────── Rating (Glicko-2 per game) ───────────────────────────────
+
+model RatingState {
+  userId        String
+  user          User   @relation(fields: [userId], references: [id])
+  gameId        String
+  game          Game   @relation(fields: [gameId], references: [id])
+  rating        Float  @default(1500)
+  rd            Float  @default(350)
+  volatility    Float  @default(0.06)
+  matchesPlayed Int    @default(0)
+  wins          Int    @default(0)
+
+  @@id([userId, gameId])
+  @@index([gameId, rating])
+}
+
+// ─────────────────────────────── Anti-cheat ───────────────────────────────
+
+model DeviceFingerprint {
+  id              String   @id @default(cuid())
+  hash            String
+  userId          String
+  user            User     @relation(fields: [userId], references: [id])
+  firstSeenAt     DateTime @default(now())
+  lastSeenAt      DateTime @default(now())
+  overrideAllowed Boolean  @default(false) // admin override for shared devices
+
+  @@unique([hash, userId])
+  @@index([hash])
+}
+
+enum ReviewStatus {
+  OPEN
+  CLEARED
+  ACTION_TAKEN
+}
+
+model ReviewCase {
+  id         String       @id @default(cuid())
+  userId     String
+  user       User         @relation(fields: [userId], references: [id])
+  reason     String // "WINRATE_ANOMALY" | "INPUT_TIMING" | "DEVICE_SHARED" | ...
+  detail     Json?
+  status     ReviewStatus @default(OPEN)
+  notes      String?
+  createdAt  DateTime     @default(now())
+  resolvedAt DateTime?
+  resolvedBy String?
+
+  @@index([status, createdAt])
+}
+
+// ─────────────────────────────── Tournaments & liveops ───────────────────────────────
+
+enum TournamentStatus {
+  SCHEDULED
+  RUNNING
+  FINISHED
+  CANCELLED
+}
+
+// LEADERBOARD: everyone plays one shared seed, ranked by best score.
+// KNOCKOUT: single-elimination bracket — head-to-head each round, winner
+// advances (64→32→16→8→4→2→champion). Each round has its own shared seed.
+enum TournamentFormat {
+  LEADERBOARD
+  KNOCKOUT
+}
+
+model Tournament {
+  id             String           @id @default(cuid())
+  name           String
+  gameId         String
+  game           Game             @relation(fields: [gameId], references: [id])
+  entryTetri     Int
+  // [{ rank: 1, shareBps: 5000 }, ...] of the prize pool
+  prizeStructure Json
+  guaranteeTetri Int              @default(0)
+  // Provably fair: every entrant plays the identical seed; hash committed up front.
+  seed           String?
+  seedHash       String?
+  startsAt       DateTime
+  durationS      Int              @default(600)
+  capacity       Int              @default(100)
+  status         TournamentStatus @default(SCHEDULED)
+  format         TournamentFormat @default(LEADERBOARD)
+  // KNOCKOUT: per-round play window; the round advances early once everyone
+  // in it has played, or forfeits the stragglers when the window closes.
+  roundDurationS Int              @default(600)
+  // KNOCKOUT: the longer window for round 1 — players "ready up" by playing
+  // their first match within it once the tournament starts, or they forfeit.
+  readyWindowS   Int              @default(600)
+  bracketStartedAt DateTime?
+  isRecurring    Boolean          @default(false)
+  createdAt      DateTime         @default(now())
+  finishedAt     DateTime?
+
+  entries        TournamentEntry[]
+  bracketMatches BracketMatch[]
+
+  @@index([status, startsAt])
+}
+
+enum BracketMatchStatus {
+  PENDING // waiting on feeder rounds / round not open yet
+  OPEN    // round is live, both participants may play their run
+  DONE    // resolved, winner advanced
+}
+
+// One head-to-head pairing in a knockout bracket. round 1 = first round;
+// the final is the highest round. Slot s in round r feeds round r+1 slot
+// floor(s/2), taking the a-position when s is even, b-position when odd.
+model BracketMatch {
+  id           String             @id @default(cuid())
+  tournamentId String
+  tournament   Tournament         @relation(fields: [tournamentId], references: [id])
+  round        Int
+  slot         Int
+  seed         String?
+  seedHash     String?
+  openedAt     DateTime?
+  aUserId      String?
+  bUserId      String?
+  aScore       Int?
+  bScore       Int?
+  aPlayed      Boolean            @default(false)
+  bPlayed      Boolean            @default(false)
+  winnerUserId String?
+  status       BracketMatchStatus @default(PENDING)
+
+  @@unique([tournamentId, round, slot])
+  @@index([tournamentId, round])
+}
+
+model TournamentEntry {
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id])
+  userId       String
+  user         User       @relation(fields: [userId], references: [id])
+  bestScore    Int?
+  rank         Int?
+  prizeTetri   Int?
+  joinedAt     DateTime   @default(now())
+
+  @@id([tournamentId, userId])
+}
+
+model Announcement {
+  id        String    @id @default(cuid())
+  title     String
+  body      String
+  active    Boolean   @default(true)
+  startsAt  DateTime  @default(now())
+  endsAt    DateTime?
+  createdAt DateTime  @default(now())
+}
+
+model HappyHour {
+  id              String   @id @default(cuid())
+  name            String
+  startsAt        DateTime
+  endsAt          DateTime
+  rakeDiscountBps Int      @default(10000) // 10000 = rake-free
+  gameId          String? // null = all games
+  createdAt       DateTime @default(now())
+}
+
+// ─────────────────────────────── Vault, friends, loyalty ───────────────────────────────
+
+model VaultTier {
+  id         String  @id @default(cuid())
+  key        String  @unique
+  name       String
+  priceTetri Int
+  // [{ prizeTetri, weightBps, label }] — displayed openly; total EV printed
+  prizeTable Json
+  enabled    Boolean @default(true)
+
+  opens VaultOpen[]
+}
+
+model VaultOpen {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  tierId     String
+  tier       VaultTier @relation(fields: [tierId], references: [id])
+  seed       String // vault opens are seeded + verifiable too
+  seedHash   String
+  prizeTetri Int
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, createdAt])
+}
+
+enum FriendshipStatus {
+  PENDING
+  ACCEPTED
+}
+
+model Friendship {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation("FriendOut", fields: [userId], references: [id])
+  friendId  String
+  friend    User             @relation("FriendIn", fields: [friendId], references: [id])
+  status    FriendshipStatus @default(PENDING)
+  createdAt DateTime         @default(now())
+
+  @@unique([userId, friendId])
+}
+
+enum ChallengeStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+}
+
+model Challenge {
+  id         String          @id @default(cuid())
+  fromUserId String
+  from       User            @relation("ChallengeOut", fields: [fromUserId], references: [id])
+  toUserId   String
+  to         User            @relation("ChallengeIn", fields: [toUserId], references: [id])
+  gameId     String
+  stakeTetri Int
+  status     ChallengeStatus @default(PENDING)
+  matchId    String?
+  createdAt  DateTime        @default(now())
+  expiresAt  DateTime
+
+  @@index([toUserId, status])
+}
+
+model LoyaltyWeek {
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  weekStart     DateTime // Monday 00:00 UTC
+  rakeTetri     Int      @default(0)
+  tier          String   @default("BRONZE")
+  rakebackTetri Int?
+  paidAt        DateTime?
+
+  @@id([userId, weekStart])
+}
+
+// ─────────────────────────────── Platform config ───────────────────────────────
+
+model FeatureFlag {
+  key       String   @id
+  enabled   Boolean
+  value     Json?
+  updatedAt DateTime @updatedAt
+}

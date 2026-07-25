@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Bash(pnpm --version)",
+      "Bash(pg_isready)",
+      "Bash(docker info *)",
+      "Bash(brew --version)",
+      "Bash(brew install *)",
+      "Bash(/opt/homebrew/opt/postgresql@17/bin/pg_ctl -D /opt/homebrew/var/postgresql@17 status)",
+      "Bash(openssl rand *)",
+      "Bash(brew services *)",
+      "Bash(/opt/homebrew/opt/postgresql@17/bin/createdb gamearena *)",
+      "Bash(/opt/homebrew/opt/postgresql@17/bin/psql -d gamearena -c \"SELECT version\\(\\);\")",
+      "Bash(/opt/homebrew/opt/redis/bin/redis-cli ping *)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(npx prisma *)",
+      "Bash(/opt/homebrew/opt/postgresql@17/bin/psql -d gamearena -c \"\\\\dt\")",
+      "Bash(/opt/homebrew/opt/postgresql@17/bin/dropdb gamearena *)",
+      "Bash(/opt/homebrew/opt/postgresql@17/bin/dropdb --force gamearena)",
+      "Bash(npx tsc *)",
+      "Bash(echo \"WEB_TS_EXIT=$?\")",
+      "Bash(mdfind -name \"block-blast-cover\")",
+      "Bash(cp \"/Users/SABA/Downloads/ChatGPT Image Jul 22, 2026 at 09_38_37 AM.png\" /Users/SABA/Desktop/gamearena/apps/web/public/games/block-blast-cover.png)",
+      "Bash(sips -g pixelWidth -g pixelHeight /Users/SABA/Desktop/gamearena/apps/web/public/games/block-blast-cover.png)",
+      "Bash(node -e ' *)",
+      "Bash(npx tsx *)",
+      "Bash(curl -s -m 2 localhost:4001/health)"
+    ]
+  }
+}

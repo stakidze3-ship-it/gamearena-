@@ -1,0 +1,272 @@
+@import "tailwindcss";
+
+/*
+ * GameArena design tokens — premium, minimal, calm. Dark base, gold accent.
+ * Energy colors (violet/coral/amber/mint/sky) are seasoning: game identities,
+ * badges, small live signals — never the whole dish.
+ * Money rules: tabular numerals, explicit signs, green in / red out.
+ *
+ * Surface ladder (semantic): bg = page · surface = card · raised = hover/inset
+ * on card · overlay = floating (dropdown, popover, modal).
+ * Gold alpha ladder (exactly four steps): tint gold/6 · soft border gold/30 ·
+ * strong border gold/60 · solid.
+ * Radius roles (Tailwind defaults, no overrides): rounded-md 6 badges/chips ·
+ * rounded-lg 8 buttons/inputs/rows · rounded-xl 12 cards · rounded-2xl 16
+ * modals/game board · rounded-full pills.
+ * Motion: duration-120 micro · 150 state (default) · 250 entrance · 350 panel ·
+ * 500+ celebration only. ease-out default, --ease-spring for press/reveals.
+ */
+@theme {
+  --color-bg: #0a0b0f;
+  --color-surface: #15161c;
+  --color-raised: #1a1c23;
+  --color-overlay: #1e2028;
+  --color-border: #22242c;
+  --color-border-strong: #2e313c;
+
+  --color-fg: #f5f5f7;
+  --color-fg-secondary: #c7c7cd;
+  --color-muted: #8b8b93;
+  --color-faint: #5c5d66;
+
+  --color-gold: #d4af37;
+  --color-gold-bright: #e2c453;
+
+  /* Energy accents — tuned to read on dark surfaces. Single source of truth:
+     game covers, confetti, and board cells all consume these. */
+  --color-violet: #8f84f5;
+  --color-coral: #ff7b7b;
+  --color-amber: #ffb84d;
+  --color-mint: #2fd9a4;
+  --color-sky: #4cc3f7;
+
+  --color-gain: #3ecf8e;
+  --color-loss: #e5484d;
+
+  --font-sans: var(--font-inter), var(--font-noto-georgian), ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  /* Display — Arena Numerals + headlines: broadcast-scoreboard weight. */
+  --font-display: var(--font-archivo), var(--font-inter), var(--font-noto-georgian), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Type scale — the only sizes the app uses. Replaces both Tailwind's default
+     named scale and the ad-hoc text-[NNpx] values. */
+  --text-2xs: 11px;
+  --text-2xs--line-height: 16px;
+  --text-xs: 12px;
+  --text-xs--line-height: 18px;
+  --text-sm: 13px;
+  --text-sm--line-height: 20px;
+  --text-base: 15px;
+  --text-base--line-height: 22px;
+  --text-md: 17px;
+  --text-md--line-height: 26px;
+  --text-lg: 20px;
+  --text-lg--line-height: 28px;
+  --text-xl: 24px;
+  --text-xl--line-height: 32px;
+  --text-2xl: 30px;
+  --text-2xl--line-height: 36px;
+  --text-3xl: 38px;
+  --text-3xl--line-height: 44px;
+  --text-4xl: 48px;
+  --text-4xl--line-height: 52px;
+  /* Score-display size — Arena Numerals only (result screens, match HUD). */
+  --text-5xl: 60px;
+  --text-5xl--line-height: 1;
+  /* Hero display — landing headline only. */
+  --text-6xl: 72px;
+  --text-6xl--line-height: 1.05;
+
+  /* Elevation — dark-tuned: shadow + hairline top-light. Gold glow is rationed:
+     win/settlement moments only, never idle, never on buttons. */
+  --shadow-elev-1: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-elev-2: 0 4px 16px rgb(0 0 0 / 0.45), inset 0 1px 0 rgb(255 255 255 / 0.04);
+  --shadow-elev-3: 0 16px 48px rgb(0 0 0 / 0.55), inset 0 1px 0 rgb(255 255 255 / 0.06);
+  --shadow-glow-gold: 0 0 24px rgb(212 175 55 / 0.18);
+
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-gold) 25%, transparent);
+}
+
+/* Understated scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+
+/* Money and scores always use tabular figures */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* Focus: a quiet gold ring, keyboard-only */
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-gold) 55%, transparent);
+  outline-offset: 2px;
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* ── Game cover art: idle float, hover parallax, brighten ─────────────── */
+.ga-cover-svg {
+  transition: filter 0.3s ease, transform 0.35s ease;
+}
+/* image covers get a gentle zoom-parallax on hover (SVG covers shift layers) */
+.group:hover .ga-cover-svg {
+  transform: scale(1.04);
+}
+.ga-float-a,
+.ga-float-b,
+.ga-cover-near,
+.ga-cover-far {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.ga-float-a {
+  animation: ga-float-a 7s ease-in-out infinite alternate;
+}
+.ga-float-b {
+  animation: ga-float-b 9s ease-in-out infinite alternate;
+}
+@keyframes ga-float-a {
+  from {
+    transform: translateY(0) rotate(0deg);
+  }
+  to {
+    transform: translateY(-6px) rotate(1.6deg);
+  }
+}
+@keyframes ga-float-b {
+  from {
+    transform: translateY(0) rotate(0deg);
+  }
+  to {
+    transform: translateY(5px) rotate(-1.2deg);
+  }
+}
+.ga-cover-near,
+.ga-cover-far {
+  transition: transform 0.35s ease;
+}
+.group:hover .ga-cover-near {
+  transform: translate(-6px, -2px);
+}
+.group:hover .ga-cover-far {
+  transform: translate(-3px, -1px);
+}
+.group:hover .ga-cover-svg {
+  filter: brightness(1.05);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ga-float-a,
+  .ga-float-b {
+    animation: none;
+  }
+  .group:hover .ga-cover-near,
+  .group:hover .ga-cover-far {
+    transform: none;
+  }
+  /* Reduced motion is complete, not partial: every decorative animation gates. */
+  .ga-confetti,
+  .ga-clearing,
+  .ga-will-clear,
+  .ga-charge,
+  .animate-ping,
+  .animate-pulse {
+    animation: none;
+  }
+  .ga-confetti {
+    display: none;
+  }
+}
+
+/* ── Block Blast: line clear burst + "this line will clear" preview ───── */
+
+/* Cells of a line that just filled: bright flash → glow → fade out. */
+@keyframes ga-clear-burst {
+  0% {
+    background-color: #ffffff;
+    box-shadow: 0 0 22px 8px rgba(255, 255, 255, 0.85);
+    transform: scale(1.14);
+  }
+  55% {
+    background-color: #fff3c4;
+    box-shadow: 0 0 16px 5px rgba(255, 220, 130, 0.6);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+    transform: scale(1);
+  }
+}
+.ga-clearing {
+  animation: ga-clear-burst 430ms ease-out forwards;
+  z-index: 1;
+}
+
+/* While dragging: the row/column this piece would complete lights up gold. */
+@keyframes ga-will-clear-pulse {
+  0%,
+  100% {
+    box-shadow: inset 0 0 0 2px rgba(212, 175, 55, 0.75), 0 0 10px 1px rgba(212, 175, 55, 0.28);
+  }
+  50% {
+    box-shadow: inset 0 0 0 2px rgba(226, 196, 83, 1), 0 0 16px 3px rgba(212, 175, 55, 0.5);
+  }
+}
+.ga-will-clear {
+  animation: ga-will-clear-pulse 900ms ease-in-out infinite;
+}
+
+/* "Charge" — countdown ticks land with a spring settle (remount per tick). */
+@keyframes ga-charge {
+  from {
+    transform: scale(1.12);
+    opacity: 0.6;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.ga-charge {
+  animation: ga-charge 300ms var(--ease-spring);
+}
+
+/* Confetti burst for win moments */
+@keyframes ga-confetti-fall {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(var(--cx, 0), var(--cy, 90px), 0) rotate(var(--cr, 360deg));
+    opacity: 0;
+  }
+}
+.ga-confetti {
+  animation: ga-confetti-fall 700ms ease-out forwards;
+}

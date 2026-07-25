@@ -1,0 +1,29 @@
+{
+  "name": "gamearena",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Skill-based real-money gaming platform — provably fair, server-authoritative",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n web,realtime -c blue,magenta \"npm run dev -w @gamearena/web\" \"npm run dev -w @gamearena/realtime\"",
+    "dev:web": "npm run dev -w @gamearena/web",
+    "dev:realtime": "npm run dev -w @gamearena/realtime",
+    "build": "npm run build -w @gamearena/web",
+    "db:generate": "prisma generate --schema packages/db/prisma/schema.prisma",
+    "db:migrate": "prisma migrate dev --schema packages/db/prisma/schema.prisma",
+    "db:push": "prisma db push --schema packages/db/prisma/schema.prisma",
+    "db:seed": "tsx --env-file=.env packages/db/src/seed.ts",
+    "db:studio": "prisma studio --schema packages/db/prisma/schema.prisma",
+    "ledger:check": "tsx --env-file=.env packages/db/src/ledger-check.ts",
+    "typecheck": "tsc -b apps/web packages/db packages/shared packages/games apps/realtime"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "prisma": "^6.16.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

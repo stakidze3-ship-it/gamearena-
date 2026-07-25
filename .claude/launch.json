@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "-w", "@gamearena/web"],
+      "port": 3100,
+      "autoPort": true
+    },
+    {
+      "name": "realtime",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:realtime"],
+      "port": 4001
+    }
+  ]
+}
