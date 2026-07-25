@@ -113,7 +113,7 @@ wss.on("connection", (ws, req) => {
     } catch {
       return;
     }
-    if (conn) void handleMessage(conn, msg);
+    if (conn) void dispatch(conn, msg);
     else pending.push(msg);
   });
 
@@ -153,10 +153,23 @@ wss.on("connection", (ws, req) => {
     conns.set(ws, conn);
     byUser.set(userId, conn);
 
-    for (const msg of pending) void handleMessage(conn, msg);
+    for (const msg of pending) void dispatch(conn, msg);
     pending.length = 0;
   })();
 });
+
+/**
+ * Never let one client's frame take the service down. handleMessage is async,
+ * so an unhandled rejection here would terminate the process — killing every
+ * live match room in memory and stranding their escrow, plus the scheduler.
+ */
+async function dispatch(conn: Conn, msg: ClientMessage) {
+  try {
+    await handleMessage(conn, msg);
+  } catch (err) {
+    console.error(`[realtime] message from ${conn.userId} failed`, err);
+  }
+}
 
 async function handleMessage(conn: Conn, msg: ClientMessage) {
   switch (msg.t) {

@@ -87,6 +87,7 @@ export class MatchRoom {
     if (this.ended) return;
     const p = this.players.find((x) => x.userId === userId);
     if (!p) return;
+    if (!input || typeof input !== "object") return; // frames are attacker-controlled
     const { t, s, r, c } = input;
     if (typeof t !== "number" || t < 0 || t > this.durationMs || t < p.lastT) return;
     if (![s, r, c].every((n) => Number.isInteger(n))) return;
