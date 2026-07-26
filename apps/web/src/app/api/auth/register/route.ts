@@ -58,7 +58,7 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  // ₾100 demo credit + ₾50 vault credits — minted through the ledger, idempotent.
+  // ₾5 demo credit + ₾50 vault credits — minted through the ledger, idempotent.
   await grantSignupCredit(user.id);
   await grantSignupVaultCredit(user.id);
 

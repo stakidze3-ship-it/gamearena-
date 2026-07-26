@@ -4,7 +4,7 @@ Skill-based real-money gaming platform. 1v1 casual games for real stakes — pro
 construction: identical deterministic seeds, server-side score computation, atomic escrow
 settlement, and a double-entry ledger where every tetri is accounted for.
 
-**Launch mode: demo credits only.** Every signup gets ₾100 in demo credits. The full
+**Launch mode: demo credits only.** Every signup gets ₾5 in demo credits. The full
 wallet/escrow/rake engine runs underneath; real payments sit behind `PAYMENTS_ENABLED=false`.
 
 ## Stack
