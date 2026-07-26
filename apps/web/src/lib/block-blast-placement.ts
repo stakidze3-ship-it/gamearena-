@@ -45,13 +45,19 @@ export interface BoardGeometry {
  * it, edge placements demand pixel accuracy; with more, the piece teleports
  * away from where the player is actually pointing.
  */
-export const EDGE_TOLERANCE = 1;
+export const EDGE_TOLERANCE = 1.4;
 
 /**
  * Placement assist radius, in cells. When the aimed origin is blocked, the
  * nearest legal origin within this radius is used instead.
+ *
+ * Two cells rather than one, so a rough drop into a crowded board still finds
+ * the gap the player was going for. The search is ranked by true distance from
+ * the un-rounded aim, so a legal cell right under the finger always beats a
+ * further one — widening the radius makes MORE drops succeed, it does not make
+ * them land further from where you pointed.
  */
-export const ASSIST_RADIUS = 1;
+export const ASSIST_RADIUS = 2;
 
 export function cellPitch(geo: BoardGeometry): number {
   return (geo.width - 2 * geo.pad + geo.gap) / GRID;
@@ -123,6 +129,8 @@ export function resolvePlacement(
       const c = aim.c + dc;
       if (r < 0 || c < 0 || r > GRID - shape.h || c > GRID - shape.w) continue;
       if (!fits(r, c)) continue;
+      // Distance from where the pointer really is, not from the rounded cell,
+      // so the nearest legal square to the finger always wins.
       const d = (r - aim.rawR) ** 2 + (c - aim.rawC) ** 2;
       if (!best || d < best.d) best = { r, c, d };
     }
