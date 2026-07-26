@@ -2,6 +2,7 @@ export { prisma } from "./client";
 export * from "./ledger";
 export * from "./money-ops";
 export * from "./tournaments";
+export { seedProduction } from "./seed-production";
 export * from "./bracket";
 export * from "./review";
 export * from "./password";
