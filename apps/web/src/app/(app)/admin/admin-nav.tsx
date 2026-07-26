@@ -9,6 +9,7 @@ const SECTIONS = [
   { href: "/admin/review", label: "Review queue", ready: true },
   { href: "/admin/calibration", label: "Blitz calibration", ready: true },
   { href: "/admin/liveops", label: "Liveops", ready: true },
+  { href: "/admin/tournaments", label: "Tournament testing", ready: true },
   { href: "/admin/users", label: "Users", ready: true },
   { href: "/admin/flags", label: "Feature flags", ready: true },
 ];
