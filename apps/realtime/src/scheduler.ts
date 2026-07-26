@@ -18,7 +18,7 @@ import {
   tournamentEndsAt,
   generateKnockout,
   advanceKnockout,
-  cancelKnockout,
+  cancelTournamentRefunding,
 } from "@gamearena/db";
 import { AWAITING_PLAYERS_AT, KNOCKOUT_CONFIG, KNOCKOUT_ROUNDS } from "@gamearena/shared";
 
@@ -122,7 +122,7 @@ async function tick(): Promise<void> {
     for (const t of starting) {
       if (t.format === "KNOCKOUT") {
         const placed = await generateKnockout(t.id);
-        if (placed === 0) await cancelKnockout(t.id); // nobody to play → refund
+        if (placed === 0) await cancelTournamentRefunding(t.id); // nobody to play → refund
         else console.log(`[scheduler] bracket drawn for ${t.id} — ${placed} players`);
       } else {
         await prisma.tournament.update({ where: { id: t.id }, data: { status: "RUNNING" } });

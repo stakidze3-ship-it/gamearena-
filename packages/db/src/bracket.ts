@@ -190,9 +190,11 @@ export async function submitKnockoutScore(
 
   const rounds = await roundCount(tournamentId);
   return prisma.$transaction(async (db) => {
-    // Re-read inside the transaction: the window may have closed and forfeited
-    // this match since the lookup above, and a score must never land on a
-    // match that is already decided.
+    // Lock the row, then re-read. A plain read is not enough: under READ
+    // COMMITTED the forfeit sweep can read the same OPEN row concurrently and
+    // both paths then resolve it, so a player who actually ran can be
+    // eliminated in favour of a no-show.
+    await lockBracketMatchIn(db, m.id);
     const fresh = await db.bracketMatch.findUnique({ where: { id: m.id } });
     if (!fresh || fresh.status !== "OPEN") return null;
     const isA = fresh.aUserId === userId;
@@ -218,6 +220,19 @@ async function roundCount(tournamentId: string): Promise<number> {
 }
 
 type BracketMatchRow = Prisma.BracketMatchGetPayload<object>;
+
+/**
+ * Take a row lock on a bracket match for the rest of the transaction.
+ *
+ * Five uncoordinated drivers can resolve the same match — the scheduler tick,
+ * the submit route, the state endpoint and any tournament page render — and
+ * Postgres runs READ COMMITTED, so a bare re-read inside a transaction still
+ * lets two of them see the same OPEN row and both decide it. Serialising on
+ * the row is what makes "check status, then resolve" actually atomic.
+ */
+async function lockBracketMatchIn(db: Prisma.TransactionClient, matchId: string): Promise<void> {
+  await db.$queryRaw`SELECT id FROM "BracketMatch" WHERE id = ${matchId} FOR UPDATE`;
+}
 
 /** Decide a two-player match and advance its winner. Assumes it is unresolved. */
 async function resolveMatchIn(
@@ -340,9 +355,11 @@ export async function advanceKnockout(tournamentId: string): Promise<void> {
     const windowMs = (r === 1 ? t.readyWindowS : t.roundDurationS) * 1000;
     for (const m of matches) {
       if (m.status !== "OPEN") continue;
-      // Re-read inside the transaction so a run submitted since the tick's
-      // snapshot isn't lost to a forfeit.
+      // Lock, then re-read, so a run submitted since the tick's snapshot is
+      // never lost to a forfeit — and so two concurrent drivers cannot both
+      // decide the same match.
       await prisma.$transaction(async (db) => {
+        await lockBracketMatchIn(db, m.id);
         const fresh = await db.bracketMatch.findUnique({ where: { id: m.id } });
         if (!fresh || fresh.status !== "OPEN") return;
         const closed = fresh.openedAt != null && Date.now() >= fresh.openedAt.getTime() + windowMs;
@@ -426,29 +443,36 @@ export async function finalizeKnockout(tournamentId: string): Promise<void> {
     winners.push({ userId, prizeTetri: Math.floor((prizePool * s.shareBps) / 10_000) });
   }
 
-  await prisma.$transaction(async (db) => {
-    if (pool > 0 || winners.length > 0) {
-      await settleTournamentIn(db, tournamentId, pool, winners);
-    }
-    for (let i = 0; i < ranked.length; i++) {
-      const win = winners.find((w) => w.userId === ranked[i]);
-      await db.tournamentEntry.update({
-        where: { tournamentId_userId: { tournamentId, userId: ranked[i]! } },
-        data: { rank: i + 1, prizeTetri: win?.prizeTetri ?? 0 },
+  // A full 60-player field writes a rank row per entrant plus the settlement
+  // entries — well over Prisma's default 5s interactive-transaction budget on a
+  // remote database. Timing out would roll back the payout and leave the pool
+  // escrowed with the event stuck RUNNING.
+  await prisma.$transaction(
+    async (db) => {
+      if (pool > 0 || winners.length > 0) {
+        await settleTournamentIn(db, tournamentId, pool, winners);
+      }
+      for (let i = 0; i < ranked.length; i++) {
+        const win = winners.find((w) => w.userId === ranked[i]);
+        await db.tournamentEntry.update({
+          where: { tournamentId_userId: { tournamentId, userId: ranked[i]! } },
+          data: { rank: i + 1, prizeTetri: win?.prizeTetri ?? 0 },
+        });
+      }
+      await db.tournament.update({
+        where: { id: tournamentId },
+        data: { status: "FINISHED", finishedAt: new Date() },
       });
-    }
-    await db.tournament.update({
-      where: { id: tournamentId },
-      data: { status: "FINISHED", finishedAt: new Date() },
-    });
-  });
+    },
+    { timeout: 20_000 }
+  );
 }
 
 /**
- * Cancel a knockout that never reached the minimum field: refund every entry
+ * Cancel a tournament and make every entrant whole: refund the escrowed pool
  * from escrow and mark it cancelled. Idempotent.
  */
-export async function cancelKnockout(tournamentId: string): Promise<void> {
+export async function cancelTournamentRefunding(tournamentId: string): Promise<void> {
   const t = await prisma.tournament.findUnique({
     where: { id: tournamentId },
     include: { entries: true },
@@ -459,13 +483,18 @@ export async function cancelKnockout(tournamentId: string): Promise<void> {
   const refund = t.entries.length > 0 ? Math.floor(pool / t.entries.length) : 0;
   const winners = t.entries.map((e) => ({ userId: e.userId, prizeTetri: refund }));
 
-  await prisma.$transaction(async (db) => {
-    if (pool > 0) await settleTournamentIn(db, tournamentId, pool, winners);
-    await db.tournament.update({
-      where: { id: tournamentId },
-      data: { status: "CANCELLED", finishedAt: new Date() },
-    });
-  });
+  // Refunding a full field posts an entry per entrant; the default 5s budget
+  // is not enough, and a rollback here strands everyone's stake.
+  await prisma.$transaction(
+    async (db) => {
+      if (pool > 0) await settleTournamentIn(db, tournamentId, pool, winners);
+      await db.tournament.update({
+        where: { id: tournamentId },
+        data: { status: "CANCELLED", finishedAt: new Date() },
+      });
+    },
+    { timeout: 20_000 }
+  );
 }
 
 export interface BracketMatchView {
