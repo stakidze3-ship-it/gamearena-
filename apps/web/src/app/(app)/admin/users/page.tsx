@@ -66,6 +66,7 @@ export default async function UsersPage({
               </div>
               <UserActions
                 userId={u.id}
+                username={u.username}
                 suspended={!!u.suspendedAt}
                 payoutHold={u.payoutHold}
                 kyc={u.kycStatus}

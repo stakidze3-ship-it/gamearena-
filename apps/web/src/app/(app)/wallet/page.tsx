@@ -27,6 +27,7 @@ const KIND_LABELS: Record<string, string> = {
   DEPOSIT: "Deposit",
   WITHDRAWAL: "Withdrawal",
   ADJUSTMENT: "Adjustment",
+  MANUAL_REFUND: "Refund",
 };
 
 export default async function WalletPage() {
