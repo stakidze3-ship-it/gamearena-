@@ -12,12 +12,19 @@ export const metadata: Metadata = { title: "Tournaments" };
 
 export default async function TournamentsPage() {
   const tournaments = await prisma.tournament.findMany({
-    where: { status: { in: ["SCHEDULED", "RUNNING", "FINISHED"] } },
+    // Test events are bot-filled by an admin and settle out of treasury credit.
+    // They are reachable by direct link for whoever made them, but they must
+    // never sit in a real player's tournament list.
+    where: { status: { in: ["SCHEDULED", "RUNNING", "FINISHED"] }, isTest: false },
     orderBy: [{ status: "asc" }, { createdAt: "desc" }],
+    take: 25, // history grows forever; the page only ever shows a recent slice
     include: { game: { select: { name: true } }, _count: { select: { entries: true } } },
   });
 
-  // One event is live at a time; everything else is history.
+  // One event is featured at the top; the rest go in the list below. That list
+  // is NOT necessarily history — a second open event can exist (an admin can
+  // schedule one), and calling it "Finished" would send a player to a
+  // registration page badged as over.
   const active = tournaments.find((t) => t.status === "SCHEDULED" || t.status === "RUNNING");
   const past = tournaments.filter((t) => t.id !== active?.id);
 
@@ -70,7 +77,9 @@ export default async function TournamentsPage() {
 
       {past.length > 0 && (
         <section className="mt-16">
-          <p className="mb-3 text-xs font-medium uppercase tracking-wider text-muted">Past events</p>
+          <p className="mb-3 text-xs font-medium uppercase tracking-wider text-muted">
+            {past.some((t) => t.status !== "FINISHED") ? "More events" : "Past events"}
+          </p>
           <Card className="overflow-hidden">
             <List>
               {past.map((t) => (
@@ -79,10 +88,21 @@ export default async function TournamentsPage() {
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <h3 className="text-sm font-medium tracking-tight">{t.name}</h3>
-                        <Badge tone="muted">Finished</Badge>
+                        <Badge
+                          tone={
+                            t.status === "RUNNING" ? "gold" : t.status === "SCHEDULED" ? "neutral" : "muted"
+                          }
+                        >
+                          {t.status === "RUNNING"
+                            ? "Live"
+                            : t.status === "SCHEDULED"
+                              ? "Open"
+                              : "Finished"}
+                        </Badge>
                       </div>
                       <p className="tnum mt-1 text-xs text-muted">
-                        {t._count.entries} played · {formatTetriCompact(t.entryTetri)} entry
+                        {t._count.entries} {t.status === "FINISHED" ? "played" : "entered"} ·{" "}
+                        {formatTetriCompact(t.entryTetri)} entry
                         {t.finishedAt
                           ? ` · ${t.finishedAt.toLocaleDateString("en-GB", {
                               day: "numeric",

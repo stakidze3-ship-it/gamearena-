@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma, seedProduction } from "@gamearena/db";
+import { requireAdmin } from "@/lib/auth";
 
 /**
  * Reference-data diagnostics, and a self-heal for it.
@@ -45,6 +46,8 @@ function databaseHost(): string {
 }
 
 export async function GET() {
+  // Reveals the database host and user counts — admins only.
+  await requireAdmin();
   try {
     const data = await counts();
     return NextResponse.json({
@@ -66,6 +69,8 @@ export async function GET() {
 }
 
 export async function POST(_req: NextRequest) {
+  // A WRITE. This must never have been reachable unauthenticated.
+  await requireAdmin();
   const before = await counts().catch(() => null);
   try {
     await seedProduction();

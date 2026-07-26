@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { AccountKeys, advanceKnockout, firstRoundPlan, getBalanceTetri, knockoutView, prisma } from "@gamearena/db";
+import { AccountKeys, firstRoundPlan, getBalanceTetri, knockoutView, prisma } from "@gamearena/db";
 import { isAwaitingPlayers } from "@gamearena/shared";
 import { requireUser } from "@/lib/auth";
 import { tournamentInviteUrl } from "@/lib/origin";
@@ -22,9 +22,13 @@ export default async function TournamentDetailPage({
 
   const isKnockout = t.format === "KNOCKOUT";
   if (isKnockout) {
-    // Opportunistically drive the bracket (forfeit no-shows, open next round,
-    // finalize) so it progresses even between scheduler ticks.
-    if (t.status === "RUNNING") await advanceKnockout(id);
+    // The bracket is driven by /api/tournaments/[id]/state, which throttles to
+    // one advance per event per window. It used to be driven from here too, on
+    // every render and with no throttle — and since the live hook calls
+    // router.refresh() whenever the state key moves, a full 60-player lobby
+    // turned every result into 60 simultaneous unthrottled advances, each
+    // scanning the bracket and taking row locks. The poll fires immediately on
+    // mount, so nothing is lost by leaving the driving to it.
   } else if (t.status !== "FINISHED" && new Date() > tournamentEndsAt(t.startsAt, t.durationS)) {
     // Opportunistically settle a leaderboard whose window has closed.
     await finalizeTournament(id);

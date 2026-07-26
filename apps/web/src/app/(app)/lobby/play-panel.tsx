@@ -61,19 +61,15 @@ export function PlayPanel({
           Find {formatTetriCompact(stake)} match
         </Link>
 
-        <div className="mt-3 flex items-center justify-center gap-6 text-sm">
+        {/* One destination, so one link. Two labels pointing at the same page
+            read as a choice the player does not actually have — the entry
+            picker (including free practice) lives on that screen. */}
+        <div className="mt-3 flex items-center justify-center text-sm">
           <Link
             href={disabled ? "/lobby" : `/blitz/${gameKey}`}
             className="text-muted transition-colors duration-150 hover:text-fg"
           >
-            Blitz solo
-          </Link>
-          <span className="text-faint">·</span>
-          <Link
-            href={disabled ? "/lobby" : `/blitz/${gameKey}`}
-            className="text-muted transition-colors duration-150 hover:text-fg"
-          >
-            Practice free
+            Play solo — or practise free
           </Link>
         </div>
       </div>

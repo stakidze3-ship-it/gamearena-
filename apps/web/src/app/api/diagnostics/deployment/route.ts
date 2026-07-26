@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@gamearena/db";
+import { getCurrentUser } from "@/lib/auth";
 
 /**
  * What is actually running here.
@@ -31,6 +32,13 @@ async function tableExists(table: string): Promise<boolean> {
 }
 
 export async function GET() {
+  // Anyone may confirm WHICH build is live and whether its migrations applied —
+  // that is how a deploy gets verified from outside, and it describes the code,
+  // not the customers. Everything below that (counts, preconditions) is
+  // operational detail and needs an admin.
+  const user = await getCurrentUser();
+  const isAdmin = user?.role === "ADMIN";
+
   try {
     const [
       spectatorTable,
@@ -55,9 +63,16 @@ export async function GET() {
     const byStatus = Object.fromEntries(tournaments.map((t) => [t.status, t._count._all]));
     const running = byStatus.RUNNING ?? 0;
 
-    return NextResponse.json({
+    const publicPart = {
       commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? "unknown (not a Vercel build)",
       branch: process.env.VERCEL_GIT_COMMIT_REF ?? "unknown",
+      migrationsApplied:
+        spectatorTable && bracketReplay && tournamentIsTest && matchRules,
+    };
+    if (!isAdmin) return NextResponse.json(publicPart);
+
+    return NextResponse.json({
+      ...publicPart,
       builtAt: process.env.VERCEL_DEPLOYMENT_ID ? "vercel" : "local",
 
       // Did the migrations land? If any of these is false the deployment is
