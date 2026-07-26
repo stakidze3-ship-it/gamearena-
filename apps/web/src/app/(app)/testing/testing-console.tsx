@@ -265,6 +265,30 @@ export function TestingConsole({
         )}
       </section>
 
+      {/* ── Reset your own balance ── */}
+      <section className="rounded-2xl border border-border bg-surface px-5 py-4">
+        <p className="font-medium">3 · Feel it like a new player</p>
+        <p className="mt-0.5 text-sm text-muted">
+          Accounts from before the ₾5 launch kept their old balance. This sets{" "}
+          <span className="text-fg-secondary">your own</span> demo cash to exactly ₾5 — the same
+          one-stake bankroll every new player starts with. Vault credits are untouched.
+        </p>
+        <Button
+          variant="secondary"
+          className="mt-3"
+          disabled={busy === "reset"}
+          onClick={async () => {
+            const data = await call("reset", "/api/admin/wallet-reset", { amountLari: 5 });
+            if (data) {
+              setNote({ text: "Balance set to ₾5.00 — the top bar updates on refresh.", ok: true });
+              router.refresh();
+            }
+          }}
+        >
+          {busy === "reset" ? "Resetting…" : "Reset my balance to ₾5"}
+        </Button>
+      </section>
+
       <p className="text-xs text-faint">
         Bots join through the normal registration path and play out over the round window, so the
         bracket, spectator view and prize settlement behave exactly as they do for real players.
