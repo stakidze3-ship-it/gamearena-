@@ -440,9 +440,33 @@ model BracketMatch {
  * concurrent viewers this wants a Redis sorted set or an edge counter; the
  * read/write shape here maps onto either without touching callers.
  */
+/**
+ * Fixed-window rate limiting.
+ * Serverless means no shared memory between requests, so an in-process counter
+ * would reset on every cold start and count separately per instance — no limit
+ * at all in practice. This is the smallest thing that actually holds across
+ * instances.
+ * The window is advanced by the same atomic upsert that increments the count,
+ * so two simultaneous attempts can never both read a stale window and both be
+ * allowed — the mistake that made ledger idempotency unsafe until recently.
+ * Rows are self-expiring by comparison, not by deletion; a sweep trims them.
+ */
+model RateLimit {
+  /**
+   * Bucket + subject, e.g. "login:ip:203.0.113.4" or "register:ip:...".
+   */
+  key         String   @id
+  count       Int      @default(0)
+  windowStart DateTime @default(now())
+
+  @@index([windowStart])
+}
+
 model SpectatorHeartbeat {
   tournamentId String
-  /** Which match this viewer currently has open. Mutable — see the key. */
+  /**
+   * Which match this viewer currently has open. Mutable — see the key.
+   */
   matchId      String
   viewerId     String
   lastSeenAt   DateTime @default(now())

@@ -40,7 +40,25 @@ import { startScheduler } from "./scheduler";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 loadEnv({ path: path.resolve(__dirname, "../../../.env") });
 
-const PORT = Number(process.env.REALTIME_PORT ?? 4001);
+/**
+ * Which port to bind.
+ *
+ * Every host injects PORT (Render, Railway, Fly, Heroku); binding only
+ * REALTIME_PORT would listen on the wrong one and fail every health check.
+ * REALTIME_PORT is checked first so a local .env keeps working.
+ *
+ * Blank and non-numeric values are treated as unset rather than parsed —
+ * `Number("")` is 0, which binds a random port and looks like a hang.
+ */
+function resolvePort(env: NodeJS.ProcessEnv = process.env): number {
+  for (const raw of [env.REALTIME_PORT, env.PORT]) {
+    const n = Number(raw);
+    if (raw != null && raw.trim() !== "" && Number.isInteger(n) && n > 0 && n < 65536) return n;
+  }
+  return 4001;
+}
+
+const PORT = resolvePort();
 const DEMO_MODE = process.env.DEMO_MODE !== "false";
 const secret = new TextEncoder().encode(process.env.JWT_SECRET ?? "");
 
@@ -97,7 +115,36 @@ const server = createServer((req, res) => {
   res.end();
 });
 
-const wss = new WebSocketServer({ server, path: "/ws" });
+/**
+ * Origins allowed to open a socket, comma-separated in ALLOWED_ORIGINS.
+ *
+ * Ticket auth already means a third-party page cannot obtain a credential —
+ * the ticket endpoint is same-origin and the response is not readable
+ * cross-origin. This is the second lock: it stops another site from holding
+ * open connections against this service at all, which is the cheap half of a
+ * denial-of-service. Unset means allow everything, which is right for local
+ * development and wrong for production, so the deploy config sets it.
+ */
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+function originAllowed(origin: string | undefined): boolean {
+  if (ALLOWED_ORIGINS.length === 0) return true; // unconfigured: dev
+  if (!origin) return false; // a browser always sends one
+  return ALLOWED_ORIGINS.includes(origin);
+}
+
+const wss = new WebSocketServer({
+  server,
+  path: "/ws",
+  verifyClient: ({ origin }, done) => {
+    if (originAllowed(origin)) return done(true);
+    console.warn("[realtime] rejected origin", origin);
+    done(false, 403, "Forbidden origin");
+  },
+});
 
 wss.on("connection", (ws, req) => {
   // Listeners must attach synchronously: the client sends `join` the instant

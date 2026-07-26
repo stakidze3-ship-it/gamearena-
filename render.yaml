@@ -1,0 +1,44 @@
+# Render blueprint for the realtime match service.
+#
+# The web app stays on Vercel. This is only the WebSocket service, which Vercel
+# cannot host: its functions are short-lived and a match room has to stay
+# resident for the length of a game.
+#
+# Deploy:
+#   1. Render → New → Blueprint → point at this repository.
+#   2. Fill the two secrets it asks for (they are marked sync:false below):
+#        DATABASE_URL  — the same Neon connection string the web app uses,
+#                        POOLED, since this holds long-lived connections.
+#        JWT_SECRET    — byte-identical to the web app's. The service verifies
+#                        tickets the web app signed; a mismatch means every
+#                        connection is rejected as unauthorised.
+#   3. Set ALLOWED_ORIGINS to your production web origin.
+#   4. Copy the service URL and set NEXT_PUBLIC_REALTIME_URL on Vercel to the
+#      same host with wss:// — e.g. wss://gamearena-realtime.onrender.com —
+#      then redeploy the web app. Until that is set, /api/realtime/ticket
+#      returns 503 and 1v1 stays dark by design.
+#
+# Note on the free tier: it sleeps after inactivity, and a sleeping service
+# drops live matches. Fine for testing, not for real players — use a paid
+# instance before inviting anyone.
+
+services:
+  - type: web
+    name: gamearena-realtime
+    runtime: docker
+    dockerfilePath: ./apps/realtime/Dockerfile
+    dockerContext: .
+    plan: starter
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: DEMO_MODE
+        value: "true"
+      - key: NODE_ENV
+        value: production
