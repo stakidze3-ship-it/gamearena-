@@ -116,8 +116,17 @@ export function RespondChallenge({
 }) {
   const router = useRouter();
   const [accepted, setAccepted] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   async function respond(accept: boolean) {
-    await post("/api/challenges/respond", { challengeId, accept });
+    setError(null);
+    const res = await post("/api/challenges/respond", { challengeId, accept });
+    if (!res.ok) {
+      // Most often "you can't afford this stake". Showing it here keeps the
+      // challenge open instead of sending the player to a match they cannot
+      // fund, where they would dead-end and strand the challenger too.
+      setError((res.data as { error?: string }).error ?? "Could not respond to the challenge");
+      return;
+    }
     if (accept) setAccepted(true);
     router.refresh();
   }
@@ -133,13 +142,16 @@ export function RespondChallenge({
     );
   }
   return (
-    <div className="flex shrink-0 gap-2">
-      <Button size="icon-sm" variant="primary" aria-label="Accept" onClick={() => respond(true)}>
-        <IconCheck className="h-4 w-4" />
-      </Button>
-      <Button size="icon-sm" variant="ghost" aria-label="Decline" onClick={() => respond(false)}>
-        <IconX className="h-4 w-4" />
-      </Button>
+    <div className="flex shrink-0 flex-col items-end gap-1">
+      <div className="flex gap-2">
+        <Button size="icon-sm" variant="primary" aria-label="Accept" onClick={() => respond(true)}>
+          <IconCheck className="h-4 w-4" />
+        </Button>
+        <Button size="icon-sm" variant="ghost" aria-label="Decline" onClick={() => respond(false)}>
+          <IconX className="h-4 w-4" />
+        </Button>
+      </div>
+      {error && <p className="max-w-[16rem] text-right text-2xs text-loss">{error}</p>}
     </div>
   );
 }

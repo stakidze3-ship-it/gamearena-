@@ -31,8 +31,16 @@ export function settlePot(potTetri: number, rakeBps: number): { payoutTetri: num
   return { payoutTetri: potTetri - rakeTetri, rakeTetri };
 }
 
-/** Demo credit granted on signup: ₾100. */
-export const SIGNUP_CREDIT_TETRI = lariToTetri(100);
+/**
+ * Demo credit granted on signup: ₾5.
+ *
+ * The only source of truth for the starting balance — read it rather than
+ * writing the amount again. It is exactly one ₾5 knockout entry and exactly one
+ * ₾5 1v1 stake, so a new account can play once before it needs to win.
+ * Changing it affects new accounts only; existing balances are ledger history
+ * and are never rewritten.
+ */
+export const SIGNUP_CREDIT_TETRI = lariToTetri(5);
 
 /** Blitz entry options, in tetri. */
 export const BLITZ_ENTRIES_TETRI = [100, 200, 500] as const;

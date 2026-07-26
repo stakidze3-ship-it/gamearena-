@@ -8,11 +8,25 @@
  * Logins: all demo users have password "demo1234"; admin is "admin1234".
  */
 import { createHash, randomUUID } from "node:crypto";
-import { DEFAULT_BLITZ_CURVE, blitzPayoutTetri, lariToTetri, rakeBpsForStake, STAKES_TETRI } from "@gamearena/shared";
+import {
+  DEFAULT_BLITZ_CURVE,
+  blitzPayoutTetri,
+  formatTetri,
+  lariToTetri,
+  rakeBpsForStake,
+  STAKES_TETRI,
+} from "@gamearena/shared";
 import { prisma } from "./client";
 import { AccountKeys, postTransactionIn } from "./ledger";
 import { grantSignupCredit, grantSignupVaultCredit, lockStakeIn, settleMatchIn } from "./money-ops";
 import { hashPassword } from "./password";
+
+/**
+ * Extra credit minted for seeded fixture accounts only, so the two weeks of
+ * fake history can play the ₾10 and ₾25 tiers. Real signups never receive it —
+ * see SIGNUP_CREDIT_TETRI for the actual starting balance.
+ */
+const FIXTURE_BANKROLL_TETRI = lariToTetri(95);
 
 // ── Deterministic PRNG (mulberry32) ────────────────────────────────────────
 let prngState = 0x6a75_7374;
@@ -186,13 +200,61 @@ async function main() {
     users.push({ id: created.id, username: created.username });
   }
 
-  // ── Signup credits (₾100 cash + ₾50 vault, minted, dated to signup) ──
+  // ── Signup credits (₾5 cash + ₾50 vault, minted, dated to signup) ──
   for (const u of [...users, { id: admin.id }, { id: bot.id }]) {
     const record = await prisma.user.findUniqueOrThrow({ where: { id: u.id } });
     await grantSignupCredit(u.id, record.createdAt);
     await grantSignupVaultCredit(u.id, record.createdAt);
   }
-  console.log(`✓ ${users.length} demo users + admin + bot, each credited ₾100`);
+
+  // Fixture bankroll, on top of the real signup grant.
+  //
+  // The signup grant is ₾5 — one stake at the ₾5 tier and nothing at ₾10 or
+  // ₾25. The two weeks of history below plays those tiers, so on the grant
+  // alone almost every match would hit InsufficientFundsError and be swallowed
+  // by the `catch` in the loop, leaving a plausible-looking but nearly empty
+  // world. This tops the fixture accounts up to a believable bankroll through
+  // the same ledger the product uses, so the seeded history stays honest.
+  //
+  // Deliberately NOT part of grantSignupCredit: real signups get ₾5, full stop.
+  //
+  // Gated on there being no history yet — the same condition the history block
+  // below uses — because that is the only thing this bankroll exists to fund.
+  // On any re-run, or against a database seeded before the amount changed, the
+  // history is already there, so this is skipped and not one existing balance
+  // moves. The idempotency key is belt-and-braces on top of that.
+  const fixtureIds = [...users.map((u) => u.id), admin.id, bot.id];
+  const historyCount = await prisma.match.count();
+  if (historyCount === 0) {
+    // 20s: each posting is several round trips and the default 5s ceiling is
+    // uncomfortably close on a cold database.
+    await prisma.$transaction(
+      async (db) => {
+        for (const id of fixtureIds) {
+          await postTransactionIn(db, {
+            kind: "ADJUSTMENT",
+            memo: "Seed fixture bankroll",
+            refType: "user",
+            refId: id,
+            idempotencyKey: `seed-fixture-bankroll:${id}`,
+            entries: [
+              { accountKey: AccountKeys.treasury(), amountTetri: -FIXTURE_BANKROLL_TETRI },
+              { accountKey: AccountKeys.userCash(id), amountTetri: FIXTURE_BANKROLL_TETRI },
+            ],
+          });
+        }
+      },
+      { timeout: 20_000 }
+    );
+  }
+  console.log(
+    `✓ ${users.length} demo users + admin + bot: ₾5 signup credit` +
+      ` + ${
+        historyCount === 0
+          ? `${formatTetri(FIXTURE_BANKROLL_TETRI)} seed-only fixture bankroll`
+          : "no fixture bankroll (history already present — balances untouched)"
+      }`
+  );
 
   // ── Two weeks of settled 1v1 matches (full escrow → settle ledger flow) ──
   const existingMatches = await prisma.match.count();
@@ -380,13 +442,21 @@ async function main() {
   }
 
   // ── Welcome announcement (Georgian + English — font rendering check) ──
-  if ((await prisma.announcement.count()) === 0) {
-    await prisma.announcement.create({
-      data: {
-        title: "Welcome to GameArena · კეთილი იყოს თქვენი მობრძანება",
-        body: "Demo season is live — every new player gets ₾100 in demo credits. Skill decides everything: identical seeds, server-checked scores.",
-      },
+  //
+  // Rewritten rather than create-if-absent: this row quotes the signup amount,
+  // so a database seeded before the amount changed would otherwise keep serving
+  // the stale figure on /lobby forever.
+  const welcomeTitle = "Welcome to GameArena · კეთილი იყოს თქვენი მობრძანება";
+  const welcomeBody =
+    "Demo season is live — every new player gets ₾5 in demo credits. Skill decides everything: identical seeds, server-checked scores.";
+  const existingWelcome = await prisma.announcement.findFirst({ where: { title: welcomeTitle } });
+  if (existingWelcome) {
+    await prisma.announcement.update({
+      where: { id: existingWelcome.id },
+      data: { body: welcomeBody },
     });
+  } else if ((await prisma.announcement.count()) === 0) {
+    await prisma.announcement.create({ data: { title: welcomeTitle, body: welcomeBody } });
   }
 
   console.log("✓ Seed complete");
