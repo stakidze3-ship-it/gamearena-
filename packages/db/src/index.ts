@@ -7,6 +7,7 @@ export * from "./bracket";
 export * from "./tournament-bots";
 export * from "./spectators";
 export * from "./rate-limit";
+export * from "./ensure-open-event";
 export * from "./review";
 export * from "./password";
 export * from "@prisma/client";

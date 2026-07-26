@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { prisma } from "@gamearena/db";
+import { ensureOpenKnockout, prisma } from "@gamearena/db";
 import { formatTetri, formatTetriCompact, isAwaitingPlayers, prizeTetriFor } from "@gamearena/shared";
 import { Badge } from "@/components/ui/badge";
 import { buttonClasses } from "@/components/ui/button";
@@ -11,6 +11,13 @@ import { IconChevronRight } from "@/components/icons";
 export const metadata: Metadata = { title: "Tournaments" };
 
 export default async function TournamentsPage() {
+  // There must always be something to enter. Neither of the two mechanisms
+  // that used to guarantee this survives here: production has no scheduler,
+  // and the build-time seed is deliberately non-fatal, so a failed seed ships
+  // a green deploy with an empty page and nothing to show for it. Doing it at
+  // read time means the page that needs an event is the page that makes one.
+  await ensureOpenKnockout();
+
   const tournaments = await prisma.tournament.findMany({
     // Test events are bot-filled by an admin and settle out of treasury credit.
     // They are reachable by direct link for whoever made them, but they must
