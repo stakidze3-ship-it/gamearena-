@@ -20,10 +20,12 @@
     "ledger:check": "tsx --env-file=.env packages/db/src/ledger-check.ts",
     "typecheck": "tsc -b apps/web packages/db packages/shared packages/games apps/realtime"
   },
+  "dependencies": {
+    "tsx": "^4.19.0"
+  },
   "devDependencies": {
     "concurrently": "^9.1.0",
     "prisma": "^6.16.0",
-    "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }
 }
