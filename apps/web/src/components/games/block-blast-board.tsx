@@ -54,6 +54,8 @@ type Snap = Placement;
 /** Live pointer state, kept out of React so moves never re-render. */
 interface DragLive {
   meta: DragMeta;
+  /** Only this pointer may move or finish the drag. */
+  pointerId: number;
   rect: DOMRect;
   px: number;
   py: number;
@@ -237,7 +239,9 @@ export function BlockBlastBoard({
 
   const onPointerMove = useCallback(
     (e: PointerEvent) => {
-      if (!liveRef.current) return;
+      const live = liveRef.current;
+      // A resting thumb or a second finger must not steer someone else's drag.
+      if (!live || e.pointerId !== live.pointerId) return;
       // Coalesced events give every intermediate sample the browser buffered,
       // so a fast flick resolves against where the pointer really went.
       const last = typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents().at(-1) ?? e : e;
@@ -250,7 +254,7 @@ export function BlockBlastBoard({
   const endDrag = useCallback(() => {
     window.removeEventListener("pointermove", onPointerMove);
     window.removeEventListener("pointerup", onPointerUp);
-    window.removeEventListener("pointercancel", onPointerUp);
+    window.removeEventListener("pointercancel", onPointerCancel);
     window.removeEventListener("scroll", onViewportChange, true);
     window.removeEventListener("resize", onViewportChange);
     if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
@@ -265,6 +269,7 @@ export function BlockBlastBoard({
   const onPointerUp = useCallback(
     (e: PointerEvent) => {
       const live = liveRef.current;
+      if (live && e.pointerId !== live.pointerId) return; // not our pointer
       if (live) {
         // Resolve at the exact release point — it can be newer than the last frame.
         const px = e.clientX ?? live.px;
@@ -284,6 +289,20 @@ export function BlockBlastBoard({
       endDrag();
     },
     [endDrag, originFrom, resolveSnap]
+  );
+
+  /**
+   * The gesture was taken away from us — an incoming call, a system edge swipe,
+   * the browser claiming the touch. Abandon the piece; committing a placement
+   * the player never released is worse than losing the drag.
+   */
+  const onPointerCancel = useCallback(
+    (e: PointerEvent) => {
+      const live = liveRef.current;
+      if (live && e.pointerId !== live.pointerId) return;
+      endDrag();
+    },
+    [endDrag]
   );
 
   /** A scroll or resize mid-drag invalidates the cached board rect. */
@@ -310,18 +329,18 @@ export function BlockBlastBoard({
 
       const aim = originFrom(shape, e.clientX, e.clientY, rect, meta.lift);
       const first = aim ? resolveSnap(slot, shape, aim) : null;
-      liveRef.current = { meta, rect, px: e.clientX, py: e.clientY, snap: first };
+      liveRef.current = { meta, pointerId: e.pointerId, rect, px: e.clientX, py: e.clientY, snap: first };
       pendingRef.current = { px: e.clientX, py: e.clientY };
       setDragMeta(meta);
       setSnap(first);
 
       window.addEventListener("pointermove", onPointerMove);
       window.addEventListener("pointerup", onPointerUp);
-      window.addEventListener("pointercancel", onPointerUp);
+      window.addEventListener("pointercancel", onPointerCancel);
       window.addEventListener("scroll", onViewportChange, true);
       window.addEventListener("resize", onViewportChange);
     },
-    [originFrom, resolveSnap, onPointerMove, onPointerUp, onViewportChange]
+    [originFrom, resolveSnap, onPointerMove, onPointerUp, onPointerCancel, onViewportChange]
   );
 
   // Place the floating piece at the pointer on the very first frame, so grabbing
@@ -443,15 +462,27 @@ export function BlockBlastBoard({
                   // The ghost must appear the instant the target cell changes.
                   // A colour transition here reads as input lag, because it is.
                   isGhost ? "transition-none" : "transition-colors duration-100",
-                  !color && !isGhost && !isFlash && "bg-bg",
+                  !color && !isFlash && "bg-bg",
                   isFlash && "ga-clearing",
-                  isGhost && !isFlash && (snap?.valid ? "bg-gold/40" : "bg-loss/30"),
                   isWillClear && "ga-will-clear"
                 )}
                 style={color && !isFlash ? { backgroundColor: color } : undefined}
               >
                 {color && !isFlash && (
                   <span className="absolute inset-x-0 top-0 h-1/3 rounded-t-md bg-white/25" />
+                )}
+                {/* The ghost is an overlay, not a background colour. A placed
+                    cell carries an inline backgroundColor, which beats any
+                    class — so the old version showed no feedback at all on
+                    exactly the occupied cells that explain why a placement is
+                    blocked. Those are the cells the player most needs to see. */}
+                {isGhost && !isFlash && (
+                  <span
+                    className={cn(
+                      "pointer-events-none absolute inset-0 rounded-md",
+                      snap?.valid ? "bg-gold/40" : "bg-loss/55"
+                    )}
+                  />
                 )}
               </div>
             );
