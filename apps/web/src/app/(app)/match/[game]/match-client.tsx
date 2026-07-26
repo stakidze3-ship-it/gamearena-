@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Money } from "@/components/ui/money";
 import { StakeSelector } from "@/components/ui/stake-selector";
 import { cn } from "@/lib/cn";
+import { RealtimeSocket, RealtimeUnavailableError } from "@/lib/realtime-socket";
 
 type Phase = "idle" | "connecting" | "queued" | "countdown" | "playing" | "awaiting" | "result" | "error";
 
@@ -83,23 +84,23 @@ export function MatchClient({
   const [chat, setChat] = useState<ChatMsg[]>([]);
   const [chatDraft, setChatDraft] = useState("");
 
-  const wsRef = useRef<WebSocket | null>(null);
+  const socketRef = useRef<RealtimeSocket | null>(null);
   const chatIdRef = useRef(0);
   const boardKeyRef = useRef(0);
+  /** What we were doing when the line dropped, so a reconnect can restore it. */
+  const intentRef = useRef<{ stakeTetri: number } | null>(null);
+  const [linkDown, setLinkDown] = useState(false);
 
   const canPlay = enabled && !excluded && gameKey === "block-blast";
 
   const cleanup = useCallback(() => {
-    wsRef.current?.close();
-    wsRef.current = null;
+    socketRef.current?.close();
+    socketRef.current = null;
   }, []);
 
   useEffect(() => cleanup, [cleanup]);
 
-  const send = (msg: unknown) => {
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
-  };
+  const send = (msg: unknown) => socketRef.current?.send(msg) ?? false;
 
   const handleServer = useCallback(
     (msg: Record<string, unknown>) => {
@@ -108,6 +109,10 @@ export function MatchClient({
           setPhase("queued");
           break;
         case "matched":
+          // The queue intent is spent. Without this, a drop mid-match would
+          // re-send "join" on reconnect and queue the player for a second match
+          // while the first is still running.
+          intentRef.current = null;
           setMatch(msg as unknown as MatchInfo);
           setOppScore(0);
           setChat([]);
@@ -146,35 +151,59 @@ export function MatchClient({
     setError(null);
     setResult(null);
     setPhase("connecting");
-    // Reuse an open socket (e.g. Play again); otherwise fetch a ticket + connect.
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+    intentRef.current = { stakeTetri: stake };
+
+    // Reuse the live socket (e.g. Play again) rather than opening a second one:
+    // the server closes the older connection as superseded, which used to
+    // surface as a connection error.
+    if (socketRef.current?.isOpen) {
       send({ t: "join", gameKey, stakeTetri: stake, challengeId });
       return;
     }
-    const res = await fetch("/api/realtime/ticket", { method: "POST" });
-    if (!res.ok) {
-      setError("Could not authenticate for realtime play");
-      setPhase("error");
-      return;
+
+    if (!socketRef.current) {
+      socketRef.current = new RealtimeSocket({
+        getTicket: async () => {
+          const res = await fetch("/api/realtime/ticket", { method: "POST" });
+          // 401 (session gone) and 503 (realtime not configured) will answer the
+          // same way however long we retry — say so now rather than spinning.
+          if (res.status === 401) {
+            throw new RealtimeUnavailableError(
+              "Your session expired. Reload the page and log in again."
+            );
+          }
+          if (res.status === 503) {
+            throw new RealtimeUnavailableError(
+              "Live 1v1 is temporarily unavailable. Blitz is still open."
+            );
+          }
+          if (!res.ok) throw new Error(`ticket ${res.status}`);
+          return res.json();
+        },
+        onMessage: handleServer,
+        onStatus: (status, detail) => {
+          // A drop is only worth showing once every retry has been spent.
+          setLinkDown(status === "reconnecting");
+          if (status === "failed") {
+            setError(
+              detail ??
+                "Lost connection to the match service. Check your internet and try again."
+            );
+            setPhase("error");
+          }
+        },
+        onOpen: (attempt) => {
+          // Re-state our intent on every open. On a reconnect this puts the
+          // player back in the queue they were already waiting in, so the lobby
+          // recovers without a refresh.
+          const intent = intentRef.current;
+          if (!intent) return;
+          send({ t: "join", gameKey, stakeTetri: intent.stakeTetri, challengeId });
+          if (attempt > 1) setError(null);
+        },
+      });
     }
-    const { token, wsUrl } = await res.json();
-    const ws = new WebSocket(`${wsUrl}/ws?token=${encodeURIComponent(token)}`);
-    wsRef.current = ws;
-    ws.onopen = () => send({ t: "join", gameKey, stakeTetri: stake, challengeId });
-    ws.onmessage = (e) => {
-      try {
-        handleServer(JSON.parse(e.data));
-      } catch {
-        /* ignore malformed */
-      }
-    };
-    ws.onerror = () => {
-      setError("Realtime connection failed — is the match service running?");
-      setPhase("error");
-    };
-    ws.onclose = () => {
-      wsRef.current = null;
-    };
+    await socketRef.current.connect();
   }
 
   // Countdown ticker
@@ -211,6 +240,7 @@ export function MatchClient({
 
   function leaveToIdle() {
     send({ t: "leave" });
+    intentRef.current = null; // don't re-join a queue we deliberately left
     setMatch(null);
     setSeed(null);
     setResult(null);
@@ -266,12 +296,19 @@ export function MatchClient({
       <div className="mx-auto flex max-w-lg flex-col items-center py-24 text-center">
         <div className="h-9 w-9 animate-spin rounded-full border-2 border-border border-t-gold" />
         <p className="mt-6 text-base text-muted">
-          {phase === "connecting"
-            ? "Connecting…"
-            : challengeId
-              ? "Waiting for your opponent to join the challenge…"
-              : "Searching for a rated opponent near your stake…"}
+          {linkDown
+            ? "Reconnecting…"
+            : phase === "connecting"
+              ? "Connecting…"
+              : challengeId
+                ? "Waiting for your opponent to join the challenge…"
+                : "Searching for a rated opponent near your stake…"}
         </p>
+        {linkDown && (
+          <p className="mt-2 text-sm text-subtle">
+            Your place in the queue is held while we reconnect.
+          </p>
+        )}
         <div className="mt-8 flex items-center gap-2">
           <Button variant="ghost" size="sm" onClick={leaveToIdle}>
             Cancel
