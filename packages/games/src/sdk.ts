@@ -25,7 +25,12 @@ export interface GameEngine<TState = unknown, TInput extends GameInput = GameInp
 export interface GameDefinition<TState = unknown, TInput extends GameInput = GameInput> {
   key: string;
   durationS: number;
-  create(seed: string): GameEngine<TState, TInput>;
+  /**
+   * `rulesVersion` pins the scoring rules a run was created under, so a stored
+   * input log always re-scores to the number it was actually settled on.
+   * Omitted means "latest", which is correct for new runs only.
+   */
+  create(seed: string, rulesVersion?: number): GameEngine<TState, TInput>;
 }
 
 export interface SimResult {
@@ -45,9 +50,10 @@ export function simulate(
   def: GameDefinition,
   seed: string,
   inputs: GameInput[],
-  durationMs: number
+  durationMs: number,
+  rulesVersion?: number
 ): SimResult {
-  const engine = def.create(seed);
+  const engine = def.create(seed, rulesVersion);
   let applied = 0;
   let rejected = 0;
   let lastT = -1;

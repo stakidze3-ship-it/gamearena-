@@ -11,6 +11,7 @@ import {
   type CurvePoint,
 } from "@gamearena/shared";
 import { BlockBlastBoard, type BlockBlastResult } from "@/components/games/block-blast-board";
+import type { BlockBlastRulesVersion } from "@gamearena/games";
 import { ConfettiBurst } from "@/components/confetti";
 import { IconChevronDown, IconChevronLeft } from "@/components/icons";
 import { Badge } from "@/components/ui/badge";
@@ -33,6 +34,8 @@ interface RunInfo {
   seed: string;
   entryTetri: number;
   practice: boolean;
+  /** Scoring rules the server stored for this run; practice uses the latest. */
+  rulesVersion?: BlockBlastRulesVersion;
 }
 
 interface Settlement {
@@ -166,6 +169,7 @@ export function BlitzClient({
           key={gameKeyRef.current}
           seed={run.seed}
           durationS={durationS}
+          rulesVersion={run.rulesVersion}
           onEnd={handleEnd}
         />
       </div>

@@ -41,6 +41,7 @@ export default async function ReplayPage({
       durationS={match.game.durationS}
       seed={match.seed}
       seedHash={match.seedHash}
+      rulesVersion={match.rulesVersion}
       isDraw={match.isDraw}
       stakeTetri={match.stakeTetri}
       players={players}

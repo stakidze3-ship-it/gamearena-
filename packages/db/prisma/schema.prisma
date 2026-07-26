@@ -188,6 +188,11 @@ model Match {
   seedHash   String
   status     MatchStatus @default(WAITING)
   isDemo     Boolean     @default(true) // demo-credit match (bots allowed only here)
+  // Scoring rules this match was created under. The replay viewer and any
+  // re-simulation MUST use it, or a later rules change silently re-scores
+  // history. Keep this default equal to BLOCK_BLAST_RULES_LATEST; the
+  // migration backfills pre-existing rows to 1.
+  rulesVersion Int       @default(2)
 
   winnerUserId String?
   winner       User?     @relation("MatchWinner", fields: [winnerUserId], references: [id])
@@ -264,6 +269,8 @@ model BlitzRun {
   payoutTetri Int?
   inputLog    Json?
   inputCount  Int            @default(0)
+  // See Match.rulesVersion.
+  rulesVersion Int           @default(2)
   createdAt   DateTime       @default(now())
   settledAt   DateTime?
 

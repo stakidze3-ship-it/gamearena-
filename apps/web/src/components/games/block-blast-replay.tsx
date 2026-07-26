@@ -1,6 +1,11 @@
 "use client";
 
-import { BlockBlastEngine, GRID, type BlockBlastInput } from "@gamearena/games";
+import {
+  BlockBlastEngine,
+  GRID,
+  type BlockBlastInput,
+  type BlockBlastRulesVersion,
+} from "@gamearena/games";
 import { cn } from "@/lib/cn";
 
 /**
@@ -19,9 +24,19 @@ export interface ReplayFrame {
   placed: number;
 }
 
-/** Deterministically rebuild the board state at (and including) time `tMax`. */
-export function replayTo(seed: string, inputs: BlockBlastInput[], tMax: number): ReplayFrame {
-  const eng = new BlockBlastEngine(seed);
+/**
+ * Deterministically rebuild the board state at (and including) time `tMax`.
+ *
+ * `rulesVersion` must be the one the match was played under, or the replayed
+ * score will not match the score the player was actually settled on.
+ */
+export function replayTo(
+  seed: string,
+  inputs: BlockBlastInput[],
+  tMax: number,
+  rulesVersion: BlockBlastRulesVersion
+): ReplayFrame {
+  const eng = new BlockBlastEngine(seed, rulesVersion);
   const colors: (string | null)[] = new Array(GRID * GRID).fill(null);
   let counter = 0;
   let placed = 0;

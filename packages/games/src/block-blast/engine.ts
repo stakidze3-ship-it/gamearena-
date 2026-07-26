@@ -19,9 +19,46 @@ import { SHAPES, SHAPE_WEIGHT_TOTAL, type Shape } from "./pieces";
 
 export const GRID = 8;
 const HAND = 3;
-// Tuned against the full piece set + combo streak so a strong 60s run lands
-// near the ~800 Blitz break-even (keeps the published payout curve honest).
-const CLEAR_UNIT = 16;
+
+/**
+ * Scoring rule sets, kept side by side so a stored input log always re-scores
+ * to the number it was actually paid on.
+ *
+ * The server persists the version a match or Blitz run was created under, and
+ * simulate() resolves it back. Without this, changing scoring would silently
+ * re-score every historical replay — the viewer re-simulates from the seed on
+ * every load — and make settled runs look wrong after the fact.
+ *
+ * NEVER edit an existing version. Add a new one.
+ */
+export const BLOCK_BLAST_RULES_V1 = 1;
+export const BLOCK_BLAST_RULES_V2 = 2;
+export const BLOCK_BLAST_RULES_LATEST = BLOCK_BLAST_RULES_V2;
+export type BlockBlastRulesVersion = 1 | 2;
+
+interface Rules {
+  /** Points per cleared line, scaled by lines² for simultaneous clears. */
+  clearUnit: number;
+  /**
+   * Non-clearing placements a streak survives. v1 broke the streak on the
+   * first one, which on an 8x8 with three-piece hands made combos almost
+   * unreachable — measured peak combo averaged under 2, so the multiplier
+   * essentially never engaged. Allowing a couple of dry placements is what
+   * lets a streak actually run across a hand.
+   */
+  dryTolerance: number;
+  /** Multiplier at streak k is 1 + comboStep × (k − 1), capped at comboMax. */
+  comboStep: number;
+  comboMax: number;
+}
+
+const RULES: Record<BlockBlastRulesVersion, Rules> = {
+  // Frozen. This is what every match played before the feel pass was scored on.
+  [BLOCK_BLAST_RULES_V1]: { clearUnit: 16, dryTolerance: 0, comboStep: 1, comboMax: Infinity },
+  // clearUnit re-tuned so the score distribution — and therefore the Blitz
+  // house edge — is unchanged from v1. See tools/block-blast-distribution.ts.
+  [BLOCK_BLAST_RULES_V2]: { clearUnit: 9.5, dryTolerance: 2, comboStep: 0.5, comboMax: 6 },
+};
 
 export interface BlockBlastInput extends GameInput {
   s: number; // hand slot 0..2
@@ -40,6 +77,10 @@ export interface BlockBlastState {
   lastClearLines: number;
   /** current combo streak — consecutive placements that cleared ≥1 line */
   combo: number;
+  /** score multiplier the NEXT clear would earn at this streak */
+  comboMult: number;
+  /** dry placements left before the streak breaks (0 = next dud ends it) */
+  comboLives: number;
 }
 
 export class BlockBlastEngine implements GameEngine<BlockBlastState, BlockBlastInput> {
@@ -52,9 +93,13 @@ export class BlockBlastEngine implements GameEngine<BlockBlastState, BlockBlastI
   private lastCleared: number[] = [];
   private lastClearLines = 0;
   private combo = 0;
+  /** Consecutive non-clearing placements since the last clear. */
+  private dry = 0;
+  private readonly rules: Rules;
 
-  constructor(seed: string) {
+  constructor(seed: string, rulesVersion: BlockBlastRulesVersion = BLOCK_BLAST_RULES_LATEST) {
     this.rng = new Rng(`block-blast:${seed}`);
+    this.rules = RULES[rulesVersion] ?? RULES[BLOCK_BLAST_RULES_LATEST];
     this.drawHand();
   }
 
@@ -139,19 +184,35 @@ export class BlockBlastEngine implements GameEngine<BlockBlastState, BlockBlastI
 
     this.clearLines();
 
-    // Combo streak: consecutive clearing placements escalate the payout.
-    // Clear n lines while on a combo of k → CLEAR_UNIT × n² × k. A placement
-    // that clears nothing breaks the streak.
+    // Combo streak. Clearing n lines at streak k scores
+    //   clearUnit × n² × (1 + comboStep × (k − 1))   capped at comboMax
+    // so simultaneous clears stay the big play while a sustained streak pays a
+    // steady, bounded bonus on top. A placement that clears nothing does not
+    // end the streak immediately — it burns one of `dryTolerance` lives, which
+    // is what makes a streak survivable across a three-piece hand.
     if (this.lastClearLines > 0) {
       this.combo += 1;
-      this.score += CLEAR_UNIT * this.lastClearLines * this.lastClearLines * this.combo;
-    } else {
-      this.combo = 0;
+      this.dry = 0;
+      this.score += Math.round(
+        this.rules.clearUnit * this.lastClearLines * this.lastClearLines * this.multiplierAt(this.combo)
+      );
+    } else if (this.combo > 0) {
+      this.dry += 1;
+      if (this.dry > this.rules.dryTolerance) {
+        this.combo = 0;
+        this.dry = 0;
+      }
     }
 
     if (this.hand.every((h) => h === null)) this.drawHand();
     if (!this.canPlaceAny()) this.over = true;
     return true;
+  }
+
+  /** Combo multiplier at streak k (k = 1 is the first clear, so 1.0x). */
+  private multiplierAt(k: number): number {
+    if (k < 1) return 1;
+    return Math.min(this.rules.comboMax, 1 + this.rules.comboStep * (k - 1));
   }
 
   getScore(): number {
@@ -172,6 +233,8 @@ export class BlockBlastEngine implements GameEngine<BlockBlastState, BlockBlastI
       lastCleared: [...this.lastCleared],
       lastClearLines: this.lastClearLines,
       combo: this.combo,
+      comboMult: this.multiplierAt(this.combo + 1),
+      comboLives: this.combo > 0 ? Math.max(0, this.rules.dryTolerance - this.dry) : 0,
     };
   }
 
