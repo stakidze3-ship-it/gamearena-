@@ -29,6 +29,30 @@ export function BotFillClient({ tournaments }: { tournaments: AdminTournamentRow
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ id: string; text: string; ok: boolean } | null>(null);
+  const [capacity, setCapacity] = useState(8);
+  const [roundS, setRoundS] = useState(60);
+  const [creating, setCreating] = useState(false);
+
+  async function createTest() {
+    setCreating(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/admin/tournaments/create-test", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ capacity, roundDurationS: roundS }),
+      });
+      const data = await res.json().catch(() => ({}));
+      setMessage({
+        id: "create",
+        text: res.ok ? `Created "${data.name}" — fill it below.` : data.error ?? "Could not create",
+        ok: res.ok,
+      });
+      if (res.ok) router.refresh();
+    } finally {
+      setCreating(false);
+    }
+  }
 
   async function fill(id: string) {
     setBusy(id);
@@ -55,16 +79,50 @@ export function BotFillClient({ tournaments }: { tournaments: AdminTournamentRow
     }
   }
 
-  if (tournaments.length === 0) {
-    return (
-      <p className="rounded-xl border border-border bg-surface px-4 py-8 text-center text-sm text-muted">
-        No knockout tournaments yet. Create one in Live ops, then fill it here.
+  const creator = (
+    <div className="rounded-xl border border-border bg-surface px-4 py-3">
+      <p className="text-sm font-medium">New test tournament</p>
+      <p className="mt-0.5 text-xs text-muted">
+        Disposable, born flagged as a test. Use this rather than bot-filling the real event.
       </p>
-    );
-  }
+      <div className="mt-3 flex flex-wrap items-end gap-3">
+        <label className="text-xs text-muted">
+          Seats
+          <select
+            value={capacity}
+            onChange={(e) => setCapacity(Number(e.target.value))}
+            className="mt-1 block rounded-lg border border-border bg-bg px-2 py-1.5 text-sm text-fg"
+          >
+            {[4, 8, 16, 32, 64].map((n) => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </select>
+        </label>
+        <label className="text-xs text-muted">
+          Round window
+          <select
+            value={roundS}
+            onChange={(e) => setRoundS(Number(e.target.value))}
+            className="mt-1 block rounded-lg border border-border bg-bg px-2 py-1.5 text-sm text-fg"
+          >
+            {[30, 60, 120, 180].map((n) => (
+              <option key={n} value={n}>{n}s</option>
+            ))}
+          </select>
+        </label>
+        <Button variant="primary" size="sm" disabled={creating} onClick={createTest}>
+          {creating ? "Creating…" : "Create test tournament"}
+        </Button>
+      </div>
+      {message?.id === "create" && (
+        <p className={`mt-2 text-sm ${message.ok ? "text-gain" : "text-loss"}`}>{message.text}</p>
+      )}
+    </div>
+  );
 
   return (
     <div className="space-y-3">
+      {creator}
       {tournaments.map((t) => {
         const seatsLeft = Math.max(0, t.capacity - t.entryCount);
         const fillable = t.status === "SCHEDULED" && seatsLeft > 0;
