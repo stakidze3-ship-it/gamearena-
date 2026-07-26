@@ -67,6 +67,9 @@ export async function POST(req: NextRequest) {
       runId: run.id,
       seed, // solo mode: client needs the seed to render; also recorded for verify
       seedHash,
+      // The client must run the SAME rules the row was stored with, or its
+      // displayed score will not match the score it is settled on.
+      rulesVersion: run.rulesVersion,
       durationS: game.durationS,
       gameKey,
       entryTetri,

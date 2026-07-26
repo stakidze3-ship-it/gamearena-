@@ -6,6 +6,7 @@ import type { BlockBlastInput } from "@gamearena/games";
 import { formatTetriCompact } from "@gamearena/shared";
 import { PageHeader } from "@/components/app-shell";
 import { ReplayBoard, replayTo } from "@/components/games/block-blast-replay";
+import type { BlockBlastRulesVersion } from "@gamearena/games";
 import { IconChevronDown, IconPlay } from "@/components/icons";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonClasses } from "@/components/ui/button";
@@ -30,6 +31,7 @@ export function ReplayViewer({
   durationS,
   seed,
   seedHash,
+  rulesVersion,
   isDraw,
   stakeTetri,
   players,
@@ -39,6 +41,7 @@ export function ReplayViewer({
   durationS: number;
   seed: string;
   seedHash: string;
+  rulesVersion: number;
   isDraw: boolean;
   stakeTetri: number;
   players: Player[];
@@ -92,7 +95,7 @@ export function ReplayViewer({
       {/* Boards — the two players side by side, re-simulated at time t */}
       <div className="grid grid-cols-2 gap-3 sm:gap-4">
         {players.map((p, i) => {
-          const frame = replayTo(seed, p.inputs, t);
+          const frame = replayTo(seed, p.inputs, t, rulesVersion as BlockBlastRulesVersion);
           return (
             <div key={i} className="min-w-0 space-y-2">
               <div className="flex min-w-0 items-center gap-2">

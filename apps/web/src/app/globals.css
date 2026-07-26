@@ -193,6 +193,8 @@ input[type="number"] {
   .ga-confetti,
   .ga-clearing,
   .ga-will-clear,
+  /* the pulse lives on the overlay, not the cell */
+  .ga-will-clear::after,
   .ga-charge,
   .animate-ping,
   .animate-pulse {
@@ -227,18 +229,30 @@ input[type="number"] {
   z-index: 1;
 }
 
-/* While dragging: the row/column this piece would complete lights up gold. */
+/* While dragging: the row/column this piece would complete lights up gold.
+   The glow is painted once into an overlay and only its OPACITY animates, so
+   the pulse runs on the compositor. Animating box-shadow directly — as this
+   did — repaints every lit cell on every frame, and a completed row plus
+   column is 15 cells repainting continuously while the player is dragging,
+   which is exactly when the frame budget matters most. Same look, no repaint. */
 @keyframes ga-will-clear-pulse {
   0%,
   100% {
-    box-shadow: inset 0 0 0 2px rgba(212, 175, 55, 0.75), 0 0 10px 1px rgba(212, 175, 55, 0.28);
+    opacity: 0.72;
   }
   50% {
-    box-shadow: inset 0 0 0 2px rgba(226, 196, 83, 1), 0 0 16px 3px rgba(212, 175, 55, 0.5);
+    opacity: 1;
   }
 }
-.ga-will-clear {
+.ga-will-clear::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 2px rgba(226, 196, 83, 1), 0 0 16px 3px rgba(212, 175, 55, 0.5);
   animation: ga-will-clear-pulse 900ms ease-in-out infinite;
+  will-change: opacity;
 }
 
 /* "Charge" — countdown ticks land with a spring settle (remount per tick). */

@@ -57,7 +57,8 @@ export async function POST(req: NextRequest) {
   // ── The authoritative bit: recompute the score server-side from the raw
   //    inputs, through the exact same engine. The client's score is ignored. ──
   const durationMs = run.game.durationS * 1000;
-  const sim = simulate(def, run.seed, inputs, durationMs);
+  // Score under the rules this run was CREATED with, never the newest ones.
+  const sim = simulate(def, run.seed, inputs, durationMs, run.rulesVersion);
   const serverScore = sim.score;
 
   const curve = run.config.curve as unknown as CurvePoint[];

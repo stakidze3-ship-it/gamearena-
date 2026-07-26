@@ -1,10 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BlockBlastEngine, GRID, type BlockBlastInput, type Shape } from "@gamearena/games";
+import {
+  BLOCK_BLAST_RULES_LATEST,
+  BlockBlastEngine,
+  GRID,
+  type BlockBlastInput,
+  type BlockBlastRulesVersion,
+  type Shape,
+} from "@gamearena/games";
 import { Button } from "@/components/ui/button";
 import { IconVolume, IconVolumeOff } from "@/components/icons";
 import { cn } from "@/lib/cn";
+import {
+  resolvePlacement,
+  snapOrigin,
+  type Aim,
+  type BoardGeometry,
+  type Placement,
+} from "@/lib/block-blast-placement";
 import { initMuted, playClear, playGameOver, playPlace, setMuted } from "@/lib/sound";
 
 /**
@@ -25,31 +39,45 @@ export interface BlockBlastResult {
   clientScore: number;
 }
 
-interface DragState {
+/** Everything about a drag that never changes while it runs. */
+interface DragMeta {
   slot: number;
   shape: Shape;
+  touch: boolean;
+  cell: number;
+  lift: number;
+}
+
+/** Where the piece would land. Only this drives a React render. */
+type Snap = Placement;
+
+/** Live pointer state, kept out of React so moves never re-render. */
+interface DragLive {
+  meta: DragMeta;
+  rect: DOMRect;
   px: number;
   py: number;
-  origin: { r: number; c: number } | null;
-  valid: boolean;
-  rect: DOMRect;
-  touch: boolean;
+  snap: Snap | null;
 }
+
 
 export function BlockBlastBoard({
   seed,
   durationS,
+  rulesVersion = BLOCK_BLAST_RULES_LATEST,
   onEnd,
   onInput,
 }: {
   seed: string;
   durationS: number;
+  /** Scoring rules for this run — must match what the server stored. */
+  rulesVersion?: BlockBlastRulesVersion;
   onEnd: (result: BlockBlastResult) => void;
   /** Fires on every legal placement — used to stream inputs live in 1v1. */
   onInput?: (input: BlockBlastInput) => void;
 }) {
   const engineRef = useRef<BlockBlastEngine | null>(null);
-  if (!engineRef.current) engineRef.current = new BlockBlastEngine(seed);
+  if (!engineRef.current) engineRef.current = new BlockBlastEngine(seed, rulesVersion);
 
   const startRef = useRef(0);
   const inputsRef = useRef<BlockBlastInput[]>([]);
@@ -62,12 +90,17 @@ export function BlockBlastBoard({
   const [remaining, setRemaining] = useState(durationS);
   const [flash, setFlash] = useState<number[]>([]);
   const [comboText, setComboText] = useState<string | null>(null);
-  const [drag, setDrag] = useState<DragState | null>(null);
+  const [dragMeta, setDragMeta] = useState<DragMeta | null>(null);
+  const [snap, setSnap] = useState<Snap | null>(null);
   const [mute, setMute] = useState(false);
   useEffect(() => setMute(initMuted()), []);
-  const dragRef = useRef<DragState | null>(null);
+  const liveRef = useRef<DragLive | null>(null);
   const rafRef = useRef<number | null>(null);
   const pendingRef = useRef<{ px: number; py: number } | null>(null);
+  /** The floating piece, moved by writing transform directly — never via state. */
+  const floatRef = useRef<HTMLDivElement>(null);
+  /** The hand tray — releasing a piece over it cancels the drag. */
+  const trayRef = useRef<HTMLDivElement>(null);
 
   const finish = useCallback(() => {
     if (endedRef.current) return;
@@ -146,108 +179,173 @@ export function BlockBlastBoard({
   placeRef.current = place;
 
   // ── Drag & drop ──
-  // Forgiving placement: snap to the nearest cell and CLAMP so the whole piece
-  // always fits on the board — just drag it roughly where you want. On a mouse
-  // the piece sits right under the cursor (no lift); on touch it floats above
-  // the finger so you can see it. The board rect is measured once per drag and
-  // moves are coalesced to one update per frame (rAF) to keep it smooth.
-  const originFrom = useCallback(
-    (shape: Shape, px: number, py: number, rect: DOMRect, touch: boolean) => {
-      const pad = 8; // p-2
-      const gap = 4; // gap-1
-      const pitch = (rect.width - 2 * pad + gap) / GRID; // cell centre-to-centre
-      const lift = touch ? pitch * 0.9 : 0;
-      const sx = px - rect.left - pad;
-      const sy = py - lift - rect.top - pad;
-      if (sx < -pitch || sx > rect.width || sy < -pitch * 2 || sy > rect.height + pitch) return null;
-      const centerC = Math.floor(sx / pitch);
-      const centerR = Math.floor(sy / pitch);
-      const r = Math.max(0, Math.min(GRID - shape.h, centerR - Math.floor(shape.h / 2)));
-      const c = Math.max(0, Math.min(GRID - shape.w, centerC - Math.floor(shape.w / 2)));
-      return { r, c };
-    },
+  //
+  // The piece is centred on the pointer and snapped to the nearest cell, with a
+  // one-cell tolerance at the edges and a one-cell assist search when the exact
+  // target is blocked. On a mouse the piece sits under the cursor; on touch it
+  // floats above the finger so it is not hidden by the hand.
+  //
+  // Nothing here touches React state per frame — see onPointerMove.
+
+  const geometryFrom = useCallback(
+    (rect: DOMRect): BoardGeometry => ({ left: rect.left, top: rect.top, width: rect.width, pad: 8, gap: 4 }),
     []
   );
 
+  const originFrom = useCallback(
+    (shape: Shape, px: number, py: number, rect: DOMRect, lift: number) =>
+      snapOrigin(shape, px, py, geometryFrom(rect), lift),
+    [geometryFrom]
+  );
+
+  const resolveSnap = useCallback((slot: number, shape: Shape, aim: Aim): Snap => {
+    const eng = engineRef.current!;
+    return resolvePlacement(shape, aim, (r, c) => eng.previewFits(slot, r, c));
+  }, []);
+
+  /** Move the floating piece without React — a style write, not a render. */
+  const paintFloat = useCallback((px: number, py: number, lift: number) => {
+    const el = floatRef.current;
+    if (!el) return;
+    // translate3d keeps this on the compositor. The old version animated left/top,
+    // which forces layout on every frame of every drag.
+    el.style.transform = `translate3d(${px}px, ${py - lift}px, 0) translate(-50%, -50%)`;
+  }, []);
+
   const applyMove = useCallback(() => {
     rafRef.current = null;
-    const d = dragRef.current;
+    const live = liveRef.current;
     const p = pendingRef.current;
-    if (!d || !p) return;
-    const origin = originFrom(d.shape, p.px, p.py, d.rect, d.touch);
-    const valid = origin ? engineRef.current!.previewFits(d.slot, origin.r, origin.c) : false;
-    const next = { ...d, px: p.px, py: p.py, origin, valid };
-    dragRef.current = next;
-    setDrag(next);
-  }, [originFrom]);
+    if (!live || !p) return;
+    live.px = p.px;
+    live.py = p.py;
+
+    paintFloat(p.px, p.py, live.meta.lift);
+
+    const aim = originFrom(live.meta.shape, p.px, p.py, live.rect, live.meta.lift);
+    const next = aim ? resolveSnap(live.meta.slot, live.meta.shape, aim) : null;
+
+    // The grid only needs to re-render when the landing square or its legality
+    // actually changes — a few times a second, not sixty.
+    const prev = live.snap;
+    const same =
+      (prev === null && next === null) ||
+      (prev !== null && next !== null && prev.r === next.r && prev.c === next.c && prev.valid === next.valid);
+    live.snap = next;
+    if (!same) setSnap(next);
+  }, [originFrom, paintFloat, resolveSnap]);
 
   const onPointerMove = useCallback(
     (e: PointerEvent) => {
-      if (!dragRef.current) return;
-      pendingRef.current = { px: e.clientX, py: e.clientY };
+      if (!liveRef.current) return;
+      // Coalesced events give every intermediate sample the browser buffered,
+      // so a fast flick resolves against where the pointer really went.
+      const last = typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents().at(-1) ?? e : e;
+      pendingRef.current = { px: last.clientX, py: last.clientY };
       if (rafRef.current == null) rafRef.current = requestAnimationFrame(applyMove);
     },
     [applyMove]
   );
 
-  const onPointerUp = useCallback(() => {
-    const d = dragRef.current;
+  const endDrag = useCallback(() => {
     window.removeEventListener("pointermove", onPointerMove);
     window.removeEventListener("pointerup", onPointerUp);
+    window.removeEventListener("pointercancel", onPointerUp);
+    window.removeEventListener("scroll", onViewportChange, true);
+    window.removeEventListener("resize", onViewportChange);
     if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
     rafRef.current = null;
-    if (d) {
-      // Drop at the exact release position (may be newer than the last frame).
-      const p = pendingRef.current ?? { px: d.px, py: d.py };
-      const origin = originFrom(d.shape, p.px, p.py, d.rect, d.touch);
-      if (origin && engineRef.current!.previewFits(d.slot, origin.r, origin.c)) {
-        placeRef.current(origin.r, origin.c, d.slot);
-      }
-    }
     pendingRef.current = null;
-    dragRef.current = null;
-    setDrag(null);
-  }, [onPointerMove, originFrom]);
+    liveRef.current = null;
+    setDragMeta(null);
+    setSnap(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onPointerUp = useCallback(
+    (e: PointerEvent) => {
+      const live = liveRef.current;
+      if (live) {
+        // Resolve at the exact release point — it can be newer than the last frame.
+        const px = e.clientX ?? live.px;
+        const py = e.clientY ?? live.py;
+        // Dropping a piece back on the tray means "never mind". Without this,
+        // a change of heart still counts as a move, because the edge tolerance
+        // can reach the bottom row from just above the tray.
+        const tray = trayRef.current?.getBoundingClientRect();
+        const overTray =
+          !!tray && px >= tray.left && px <= tray.right && py >= tray.top && py <= tray.bottom;
+        if (!overTray) {
+          const aim = originFrom(live.meta.shape, px, py, live.rect, live.meta.lift);
+          const target = aim ? resolveSnap(live.meta.slot, live.meta.shape, aim) : null;
+          if (target?.valid) placeRef.current(target.r, target.c, live.meta.slot);
+        }
+      }
+      endDrag();
+    },
+    [endDrag, originFrom, resolveSnap]
+  );
+
+  /** A scroll or resize mid-drag invalidates the cached board rect. */
+  const onViewportChange = useCallback(() => {
+    const live = liveRef.current;
+    const board = boardRef.current;
+    if (!live || !board) return;
+    live.rect = board.getBoundingClientRect();
+    if (rafRef.current == null) rafRef.current = requestAnimationFrame(applyMove);
+  }, [applyMove]);
 
   const startDrag = useCallback(
     (e: React.PointerEvent, slot: number, shape: Shape) => {
-      if (dragRef.current || endedRef.current) return;
+      if (liveRef.current || endedRef.current) return;
       e.preventDefault();
       const board = boardRef.current;
       if (!board) return;
       const rect = board.getBoundingClientRect();
       const touch = e.pointerType === "touch";
-      const origin = originFrom(shape, e.clientX, e.clientY, rect, touch);
-      const valid = origin ? engineRef.current!.previewFits(slot, origin.r, origin.c) : false;
-      const d = { slot, shape, px: e.clientX, py: e.clientY, origin, valid, rect, touch };
-      dragRef.current = d;
-      setDrag(d);
+      const pad = 8;
+      const gap = 4;
+      const pitch = (rect.width - 2 * pad + gap) / GRID;
+      const meta: DragMeta = { slot, shape, touch, cell: pitch - gap, lift: touch ? pitch * 0.9 : 0 };
+
+      const aim = originFrom(shape, e.clientX, e.clientY, rect, meta.lift);
+      const first = aim ? resolveSnap(slot, shape, aim) : null;
+      liveRef.current = { meta, rect, px: e.clientX, py: e.clientY, snap: first };
+      pendingRef.current = { px: e.clientX, py: e.clientY };
+      setDragMeta(meta);
+      setSnap(first);
+
       window.addEventListener("pointermove", onPointerMove);
       window.addEventListener("pointerup", onPointerUp);
+      window.addEventListener("pointercancel", onPointerUp);
+      window.addEventListener("scroll", onViewportChange, true);
+      window.addEventListener("resize", onViewportChange);
     },
-    [originFrom, onPointerMove, onPointerUp]
+    [originFrom, resolveSnap, onPointerMove, onPointerUp, onViewportChange]
   );
 
+  // Place the floating piece at the pointer on the very first frame, so grabbing
+  // a piece shows it immediately rather than only once the pointer moves.
   useEffect(() => {
-    return () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-    };
-  }, [onPointerMove, onPointerUp]);
+    const live = liveRef.current;
+    if (dragMeta && live) paintFloat(live.px, live.py, dragMeta.lift);
+  }, [dragMeta, paintFloat]);
+
+  useEffect(() => endDrag, [endDrag]);
 
   // Ghost footprint for the current drag
   const ghost = new Set<number>();
-  if (drag?.origin) {
-    for (const [dr, dc] of drag.shape.cells) {
-      const rr = drag.origin.r + dr;
-      const cc = drag.origin.c + dc;
+  if (dragMeta && snap) {
+    for (const [dr, dc] of dragMeta.shape.cells) {
+      const rr = snap.r + dr;
+      const cc = snap.c + dc;
       if (rr >= 0 && cc >= 0 && rr < GRID && cc < GRID) ghost.add(rr * GRID + cc);
     }
   }
 
   // Rows/columns this drop would complete — they light up before you release.
   const willClear = new Set<number>();
-  if (drag?.origin && drag.valid) {
+  if (snap?.valid) {
     const g = state.grid.slice();
     for (const idx of ghost) g[idx] = true;
     for (let i = 0; i < GRID; i++) {
@@ -261,10 +359,6 @@ export function BlockBlastBoard({
       if (colFull) for (let j = 0; j < GRID; j++) willClear.add(j * GRID + i);
     }
   }
-  // Cell size for the floating piece — from the drag's cached rect (no reflow).
-  const cellSize = drag ? drag.rect.width / GRID : 44;
-  const floatLift = drag?.touch ? cellSize * 0.9 : 0;
-
   const pct = (remaining / durationS) * 100;
   const low = remaining <= 10;
 
@@ -276,8 +370,23 @@ export function BlockBlastBoard({
           <div className="flex items-center gap-2">
             <p className="text-[12px] font-medium uppercase tracking-wider text-muted">Score</p>
             {state.combo >= 2 && (
-              <span className="animate-pulse rounded-full bg-gold/15 px-2 py-0.5 text-[11px] font-bold text-gold">
-                🔥 COMBO ×{state.combo}
+              // Shows what the streak is actually worth, and dims when a dry
+              // placement has spent a life — so the risk is legible before the
+              // streak dies rather than only after.
+              <span
+                className={cn(
+                  "rounded-full px-2 py-0.5 text-[11px] font-bold transition-opacity duration-150",
+                  state.comboLives === 0
+                    ? "bg-gold/10 text-gold/60"
+                    : "animate-pulse bg-gold/15 text-gold"
+                )}
+                title={
+                  state.comboLives === 0
+                    ? "One more placement without a clear ends the streak"
+                    : `${state.comboLives} placement${state.comboLives === 1 ? "" : "s"} of slack left`
+                }
+              >
+                COMBO ×{state.combo} · {state.comboMult.toFixed(1)}× pts
               </span>
             )}
           </div>
@@ -314,7 +423,10 @@ export function BlockBlastBoard({
 
       {/* Board */}
       <div className="relative">
-        <div ref={boardRef} className="grid aspect-square grid-cols-8 gap-1 rounded-2xl border border-border bg-surface p-2">
+        <div
+          ref={boardRef}
+          className="grid aspect-square touch-none grid-cols-8 gap-1 rounded-2xl border border-border bg-surface p-2"
+        >
           {Array.from({ length: GRID * GRID }, (_, idx) => {
             const r = Math.floor(idx / GRID);
             const c = idx % GRID;
@@ -327,10 +439,13 @@ export function BlockBlastBoard({
                 key={idx}
                 data-cell={`${r}-${c}`}
                 className={cn(
-                  "relative rounded-md transition-colors duration-100",
+                  "relative rounded-md",
+                  // The ghost must appear the instant the target cell changes.
+                  // A colour transition here reads as input lag, because it is.
+                  isGhost ? "transition-none" : "transition-colors duration-100",
                   !color && !isGhost && !isFlash && "bg-bg",
                   isFlash && "ga-clearing",
-                  isGhost && !isFlash && (drag?.valid ? "bg-gold/40" : "bg-loss/30"),
+                  isGhost && !isFlash && (snap?.valid ? "bg-gold/40" : "bg-loss/30"),
                   isWillClear && "ga-will-clear"
                 )}
                 style={color && !isFlash ? { backgroundColor: color } : undefined}
@@ -358,9 +473,9 @@ export function BlockBlastBoard({
       </div>
 
       {/* Hand tray — drag any piece onto the board */}
-      <div className="mt-4 grid grid-cols-3 gap-3">
+      <div ref={trayRef} className="mt-4 grid grid-cols-3 gap-3">
         {state.hand.map((shape, slot) => {
-          const dragging = drag?.slot === slot;
+          const dragging = dragMeta?.slot === slot;
           return (
             <div
               key={slot}
@@ -383,13 +498,20 @@ export function BlockBlastBoard({
         Drag any piece onto the board. Fill a full row or column to clear it.
       </p>
 
-      {/* Floating piece — under the cursor (mouse) or above the finger (touch) */}
-      {drag && (
+      {/* Floating piece — under the cursor (mouse) or above the finger (touch).
+          Positioned at the origin and moved only by transform, so a drag never
+          triggers layout. */}
+      {dragMeta && (
         <div
-          className="pointer-events-none fixed z-50"
-          style={{ left: drag.px, top: drag.py - floatLift, transform: "translate(-50%, -50%)" }}
+          ref={floatRef}
+          className="pointer-events-none fixed left-0 top-0 z-50 will-change-transform"
         >
-          <PieceGlyph shape={drag.shape} color={BLOCK_COLORS[drag.slot % BLOCK_COLORS.length]!} unit={cellSize} gap={4} />
+          <PieceGlyph
+            shape={dragMeta.shape}
+            color={BLOCK_COLORS[dragMeta.slot % BLOCK_COLORS.length]!}
+            unit={dragMeta.cell}
+            gap={4}
+          />
         </div>
       )}
     </div>
