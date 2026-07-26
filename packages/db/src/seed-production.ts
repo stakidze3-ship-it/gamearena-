@@ -121,8 +121,13 @@ export async function seedProduction(): Promise<void> {
     where: { key: "block-blast", enabled: true },
   });
   if (blockBlast) {
+    // isTest: false matters. A bot-filled event is flagged as a test and hidden
+    // from players — but it is still SCHEDULED, so without this filter it
+    // counted as "an event is already open" and suppressed the real one on
+    // every deploy. Production ended up with three tournaments and an empty
+    // Tournaments page, and no redeploy could heal it.
     const open = await prisma.tournament.findFirst({
-      where: { format: "KNOCKOUT", status: { in: ["SCHEDULED", "RUNNING"] } },
+      where: { format: "KNOCKOUT", isTest: false, status: { in: ["SCHEDULED", "RUNNING"] } },
       select: { id: true },
     });
     if (!open) {
