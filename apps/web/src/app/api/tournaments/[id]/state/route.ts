@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { advanceKnockout, currentKnockoutMatch, prisma } from "@gamearena/db";
+import {
+  advanceKnockout,
+  cancelTournamentRefunding,
+  currentKnockoutMatch,
+  generateKnockout,
+  prisma,
+} from "@gamearena/db";
 import { isAwaitingPlayers } from "@gamearena/shared";
 import { getCurrentUser } from "@/lib/auth";
 
@@ -32,13 +38,25 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 
   const pre = await prisma.tournament.findUnique({
     where: { id },
-    select: { id: true, status: true, format: true },
+    select: { id: true, status: true, format: true, startsAt: true },
   });
   if (!pre) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  if (pre.format === "KNOCKOUT" && pre.status === "RUNNING" && throttleAdvance(id)) {
+  if (pre.format === "KNOCKOUT" && throttleAdvance(id)) {
     // Never let a driver error break the poll — the next tick retries.
-    await advanceKnockout(id).catch(() => {});
+    if (pre.status === "SCHEDULED" && pre.startsAt.getTime() <= Date.now()) {
+      // The field filled and its countdown expired. Drawing the bracket is
+      // normally the scheduler's job, but a web-only deployment has no
+      // scheduler — without this a full lobby would sit with everyone's stake
+      // escrowed and never start.
+      await generateKnockout(id)
+        .then(async (placed) => {
+          if (placed === 0) await cancelTournamentRefunding(id); // too few to play → refund
+        })
+        .catch(() => {});
+    } else if (pre.status === "RUNNING") {
+      await advanceKnockout(id).catch(() => {});
+    }
   }
 
   const user = await getCurrentUser();
