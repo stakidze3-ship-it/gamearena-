@@ -148,10 +148,17 @@ export async function fillTournamentWithBots(
     return { seated: 0, alreadyFull: true, entryCount: taken, capacity: t.capacity, startsAt: t.startsAt };
   }
 
-  // Mark the event as a test BEFORE seating anyone, so a crash midway still
-  // leaves it unmistakably flagged rather than looking like a real tournament
-  // with a handful of bots in it.
-  await prisma.tournament.update({ where: { id: tournamentId }, data: { isTest: true } });
+  // Refuse to touch a live event.
+  //
+  // Filling seats marks the tournament as a test permanently, which hides it
+  // from every player. Run against a real event that is what happens: it
+  // vanishes from the Tournaments page and cannot be brought back. Bot fill is
+  // for events created as tests, and nothing else.
+  if (!t.isTest) {
+    throw new Error(
+      "This is a live tournament — filling it with bots would hide it from players permanently. Create a test tournament instead."
+    );
+  }
 
   const bots = await ensureBotUsers(need);
   let seated = 0;

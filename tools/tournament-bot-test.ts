@@ -57,6 +57,10 @@ async function main() {
       roundDurationS: ROUND_S,
       readyWindowS: ROUND_S,
       durationS: 60,
+      // Declared up front. Bot fill refuses live events now, because filling
+      // one hides it from players permanently — which is exactly how the
+      // production Tournaments page ended up empty.
+      isTest: true,
     },
   });
   console.log(`  tournament ${t.id}`);
@@ -68,7 +72,7 @@ async function main() {
   check("every seat filled", fill.entryCount === CAPACITY, `${fill.entryCount}/${CAPACITY}`);
 
   const marked = await prisma.tournament.findUniqueOrThrow({ where: { id: t.id } });
-  check("tournament flagged as a test event", marked.isTest);
+  check("event is flagged as a test (bot fill refuses live events)", marked.isTest);
   check("countdown started on fill", marked.startsAt.getFullYear() < 2099, marked.startsAt.toISOString());
 
   const escrow = await getBalanceTetri(prisma, AccountKeys.tournamentEscrow(t.id));

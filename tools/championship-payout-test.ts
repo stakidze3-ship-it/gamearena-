@@ -72,6 +72,10 @@ async function adminCookie(): Promise<string> {
   check("pool matches seats × entry", created.poolTetri === poolTetri, formatTetri(created.poolTetri));
   check("no rake — prizes consume the whole pool", created.rakeTetri === 0, `${created.rakeTetri} tetri`);
 
+  // Created live (that is the path under test), but bot-filling a live event is
+  // now refused — correctly, since it would hide it from players. Flag this one
+  // as a test first: we are verifying settlement maths, not running an event.
+  await prisma.tournament.update({ where: { id: created.id }, data: { isTest: true } });
   await fillTournamentWithBots(created.id, 1);
   await prisma.tournament.update({ where: { id: created.id }, data: { startsAt: new Date() } });
   const placed = await generateKnockout(created.id);

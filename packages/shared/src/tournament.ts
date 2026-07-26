@@ -16,9 +16,9 @@ export interface PrizeShare {
 }
 
 export const KNOCKOUT_CONFIG = {
-  name: "GameArena ₾5 Knockout",
-  /** Seats. 60 → a 64-slot bracket with 4 byes. */
-  capacity: 60,
+  name: "Block Blast Championship",
+  /** Seats. 32 → an exact bracket: 32 → 16 → 8 → 4 → 2 → champion, no byes. */
+  capacity: 32,
   /** ₾5 entry, in tetri. */
   entryTetri: 500,
   /** Lobby countdown between the field filling and the draw. */
@@ -28,15 +28,18 @@ export const KNOCKOUT_CONFIG = {
   roundDurationS: 180,
   /** No guarantee: a full field funds the published prizes exactly. */
   guaranteeTetri: 0,
+  // A full field is 32 × ₾5 = ₾160, and the three prizes consume all of it —
+  // this event takes no rake by design.
   prizeStructure: [
-    { rank: 1, shareBps: 5000 }, // ₾150
-    { rank: 2, shareBps: 3000 }, // ₾90
-    { rank: 3, shareBps: 2000 }, // ₾60
+    { rank: 1, shareBps: 5000 }, // ₾80
+    { rank: 2, shareBps: 3125 }, // ₾50
+    { rank: 3, shareBps: 1875 }, // ₾30
   ] as PrizeShare[],
 };
 
 /** Rounds needed to crown a champion from a full field (60 → 64 → 6). */
-export const KNOCKOUT_ROUNDS = 6;
+/** 32 seats → five rounds. Used only to size the event's overall window. */
+export const KNOCKOUT_ROUNDS = 5;
 
 /**
  * `startsAt` sentinel used while registration is open. The scheduler starts an
