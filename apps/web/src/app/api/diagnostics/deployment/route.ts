@@ -79,6 +79,31 @@ export async function GET() {
     });
     const hiddenAsTest = await prisma.tournament.count({ where: { isTest: true } });
 
+    // The open event's advertised terms. This is what the Tournaments page puts
+    // in front of every visitor, so there is nothing to protect — and it is the
+    // difference between "a tournament exists" and "the right tournament
+    // exists", which is the question actually being asked.
+    const openEvent = await prisma.tournament.findFirst({
+      where: { isTest: false, status: "SCHEDULED", format: "KNOCKOUT" },
+      select: {
+        id: true, name: true, capacity: true, entryTetri: true, prizeStructure: true,
+        _count: { select: { entries: true } },
+      },
+    });
+    const openEventSummary = openEvent
+      ? {
+          id: openEvent.id,
+          name: openEvent.name,
+          capacity: openEvent.capacity,
+          entryTetri: openEvent.entryTetri,
+          poolTetri: openEvent.capacity * openEvent.entryTetri,
+          seatsTaken: openEvent._count.entries,
+          prizesTetri: (openEvent.prizeStructure as { rank: number; shareBps: number }[]).map(
+            (p) => Math.floor((openEvent.capacity * openEvent.entryTetri * p.shareBps) / 10_000)
+          ),
+        }
+      : null;
+
     const publicPart = {
       commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? "unknown (not a Vercel build)",
       branch: process.env.VERCEL_GIT_COMMIT_REF ?? "unknown",
@@ -89,6 +114,7 @@ export async function GET() {
         visibleToPlayers,
         openForEntry,
         hiddenAsTest,
+        openEvent: openEventSummary,
         byStatus,
         enabledGames: games,
       },
