@@ -63,11 +63,35 @@ export async function GET() {
     const byStatus = Object.fromEntries(tournaments.map((t) => [t.status, t._count._all]));
     const running = byStatus.RUNNING ?? 0;
 
+    // Why an empty Tournaments page is public information.
+    //
+    // "The page is blank" has exactly three causes — nothing was created, it
+    // was created somewhere else, or a filter is hiding it — and telling them
+    // apart from outside previously required an admin session on a deployment
+    // whose admin screens were themselves unreachable. These are counts of
+    // events and games, not user data, so they cost nothing to expose and turn
+    // a guessing game into one request.
+    const visibleToPlayers = await prisma.tournament.count({
+      where: { isTest: false, status: { in: ["SCHEDULED", "RUNNING", "FINISHED"] } },
+    });
+    const openForEntry = await prisma.tournament.count({
+      where: { isTest: false, status: "SCHEDULED" },
+    });
+    const hiddenAsTest = await prisma.tournament.count({ where: { isTest: true } });
+
     const publicPart = {
       commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? "unknown (not a Vercel build)",
       branch: process.env.VERCEL_GIT_COMMIT_REF ?? "unknown",
       migrationsApplied:
         spectatorTable && bracketReplay && tournamentIsTest && matchRules,
+      tournaments: {
+        total: tournaments.reduce((n, t) => n + t._count._all, 0),
+        visibleToPlayers,
+        openForEntry,
+        hiddenAsTest,
+        byStatus,
+        enabledGames: games,
+      },
     };
     if (!isAdmin) return NextResponse.json(publicPart);
 
