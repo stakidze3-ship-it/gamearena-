@@ -16,11 +16,13 @@
  *   npx tsx tools/resolve-stack.ts --file crash.txt
  *   npx tsx tools/resolve-stack.ts --file crash.txt --base https://gamearena-iota.vercel.app
  *
- * With --base it fetches the maps from a live deployment, so a report from
- * production can be resolved without rebuilding anything. Without it, maps come
- * from apps/web/.next, which must be the build that produced the stack.
+ * --base fetches maps from a live deployment. Note that Vercel serves .map
+ * files behind auth (403 on the public alias), so for THIS deployment the
+ * practical route is a local `next build` of the same commit: chunk hashes will
+ * differ, so the resolver falls back to matching a chunk by its route and name
+ * prefix, which is enough to map a production frame to a source line.
  */
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const WEB = join(process.cwd(), "apps/web");
@@ -121,8 +123,31 @@ async function loadMap(chunkPath: string, base: string | null) {
     }
   }
   if (!raw) {
-    const local = join(WEB, ".next", decodeURIComponent(chunkPath).replace(/^\/_next\//, ""));
-    if (existsSync(`${local}.map`)) raw = readFileSync(`${local}.map`, "utf8");
+    const rel = decodeURIComponent(chunkPath).replace(/^\/_next\//, "");
+    const local = join(WEB, ".next", rel);
+    if (existsSync(`${local}.map`)) {
+      raw = readFileSync(`${local}.map`, "utf8");
+    } else {
+      // Fall back to the same chunk from a different build.
+      //
+      // Vercel serves .map files behind auth — a production stack cannot fetch
+      // its own map, and a local rebuild of the same commit gets a different
+      // content hash anyway (the commit sha is baked into the bundle). Matching
+      // on the route path and the name before the hash resolves a production
+      // frame against a local build of the same code, which is the only way
+      // this works in practice.
+      const dir = join(WEB, ".next", rel.replace(/\/[^/]+$/, ""));
+      const base = rel.replace(/^.*\//, "").replace(/-[a-f0-9]{8,}\.js$/, "");
+      if (existsSync(dir)) {
+        const hit = readdirSync(dir).find(
+          (f) => f.endsWith(".js.map") && f.startsWith(`${base}-`)
+        );
+        if (hit) {
+          console.log(`  · ${rel} not built here; using ${hit}`);
+          raw = readFileSync(join(dir, hit), "utf8");
+        }
+      }
+    }
   }
   if (!raw) {
     cache.set(chunkPath, null);
