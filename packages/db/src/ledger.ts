@@ -116,6 +116,24 @@ export async function postTransactionIn(db: Prisma.TransactionClient, input: Pos
   validate(input);
 
   if (input.idempotencyKey) {
+    // Serialise callers sharing this key before looking.
+    //
+    // "Check, then insert" is not idempotent under concurrency: two requests
+    // for the same key both find nothing and both insert, and the loser gets a
+    // unique violation. Because that error aborts the surrounding Postgres
+    // transaction, it cannot be caught and recovered from in place — it
+    // surfaces as a bare 500. Money stayed correct (the whole transaction
+    // rolls back, so nothing double-pays), but a player who just finished a
+    // winning run saw a blank error, which reads as "my winnings vanished".
+    //
+    // A transaction-scoped advisory lock makes the check-then-insert atomic and
+    // releases automatically at commit or rollback. Contending callers simply
+    // wait, then take the `existing` branch — which is what idempotent was
+    // always supposed to mean.
+    // $executeRaw, not $queryRaw: the lock function returns void, and $queryRaw
+    // tries to deserialize a result column it cannot represent.
+    await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.idempotencyKey})::bigint)`;
+
     const existing = await db.ledgerTransaction.findUnique({
       where: { idempotencyKey: input.idempotencyKey },
       include: { entries: true },

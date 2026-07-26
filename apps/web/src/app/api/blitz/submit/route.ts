@@ -57,8 +57,26 @@ export async function POST(req: NextRequest) {
   // ── The authoritative bit: recompute the score server-side from the raw
   //    inputs, through the exact same engine. The client's score is ignored. ──
   const durationMs = run.game.durationS * 1000;
+
+  // A run cannot claim more in-game time than has actually passed.
+  //
+  // The seed is revealed at start so the client can render, and the engine is
+  // deterministic and public. Validating only that timestamps fall inside the
+  // round let an attacker think for as long as they liked, search offline for a
+  // strong line, stamp it with plausible times and submit it as a 60-second
+  // run. Measured: a 2.6s beam search scored 958 against a ~520 skilled median
+  // and paid +19% on entry, every time — a guaranteed-profit money printer.
+  //
+  // Capping the scored window at real elapsed time closes it without touching
+  // honest play: a player's inputs are always behind the wall clock, so their
+  // run is unaffected, while an instant submission has nothing to score. The
+  // tolerance absorbs clock skew and the round trip that created this row.
+  const CLOCK_TOLERANCE_MS = 3_000;
+  const elapsedMs = Date.now() - run.createdAt.getTime() + CLOCK_TOLERANCE_MS;
+  const scoreableMs = Math.min(durationMs, Math.max(0, elapsedMs));
+
   // Score under the rules this run was CREATED with, never the newest ones.
-  const sim = simulate(def, run.seed, inputs, durationMs, run.rulesVersion);
+  const sim = simulate(def, run.seed, inputs, scoreableMs, run.rulesVersion);
   const serverScore = sim.score;
 
   const curve = run.config.curve as unknown as CurvePoint[];
