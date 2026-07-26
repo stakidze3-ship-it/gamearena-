@@ -106,6 +106,14 @@ wss.on("connection", (ws, req) => {
   let conn: Conn | null = null;
   const pending: ClientMessage[] = [];
 
+  // A WebSocket is an EventEmitter: an 'error' event with no listener throws,
+  // which takes down the whole process — every live match, every player. A
+  // hostile or malformed frame (e.g. invalid UTF-8 in a text frame) triggers
+  // this at the protocol level, before it ever reaches the message handler.
+  ws.on("error", (err) => {
+    console.error("[realtime] socket error", err);
+  });
+
   ws.on("message", (data) => {
     let msg: ClientMessage;
     try {
@@ -113,7 +121,7 @@ wss.on("connection", (ws, req) => {
     } catch {
       return;
     }
-    if (conn) void handleMessage(conn, msg);
+    if (conn) void dispatch(conn, msg);
     else pending.push(msg);
   });
 
@@ -153,10 +161,23 @@ wss.on("connection", (ws, req) => {
     conns.set(ws, conn);
     byUser.set(userId, conn);
 
-    for (const msg of pending) void handleMessage(conn, msg);
+    for (const msg of pending) void dispatch(conn, msg);
     pending.length = 0;
   })();
 });
+
+/**
+ * Never let one client's frame take the service down. handleMessage is async,
+ * so an unhandled rejection here would terminate the process — killing every
+ * live match room in memory and stranding their escrow, plus the scheduler.
+ */
+async function dispatch(conn: Conn, msg: ClientMessage) {
+  try {
+    await handleMessage(conn, msg);
+  } catch (err) {
+    console.error(`[realtime] message from ${conn.userId} failed`, err);
+  }
+}
 
 async function handleMessage(conn: Conn, msg: ClientMessage) {
   switch (msg.t) {
@@ -194,6 +215,26 @@ function dequeue(conn: Conn) {
 
 async function handleJoin(conn: Conn, gameKey: string, stakeTetri: number, challengeId?: string) {
   if (conn.state !== "idle") return;
+
+  // A challenge already has an agreed game and stake, set by the server when
+  // it was created — never trust the client's join message for those, or
+  // whoever's "join" happens to arrive second silently dictates the terms for
+  // both players (and could charge the other side far more than they agreed to).
+  if (challengeId) {
+    const challenge = await prisma.challenge.findUnique({ where: { id: challengeId } });
+    if (
+      !challenge ||
+      challenge.status !== "ACCEPTED" ||
+      (challenge.fromUserId !== conn.userId && challenge.toUserId !== conn.userId)
+    ) {
+      return send(conn.ws, { t: "error", message: "Challenge is no longer available" });
+    }
+    const challengeGame = await prisma.game.findUnique({ where: { id: challenge.gameId } });
+    if (!challengeGame) return send(conn.ws, { t: "error", message: "Challenge game unavailable" });
+    gameKey = challengeGame.key;
+    stakeTetri = challenge.stakeTetri;
+  }
+
   if (!getGameDefinition(gameKey)) return send(conn.ws, { t: "error", message: "Unknown game" });
   if (!STAKES_TETRI.includes(stakeTetri as (typeof STAKES_TETRI)[number])) {
     return send(conn.ws, { t: "error", message: "Invalid stake" });

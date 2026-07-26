@@ -13,8 +13,18 @@ import { useI18n } from "@/lib/i18n";
  * page right after they typed their password.
  */
 function safeNext(raw: string | null): string {
-  if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return "/lobby";
-  return raw;
+  if (!raw) return "/lobby";
+  // Resolve against our own origin and compare, rather than blacklisting
+  // characters. The URL parser strips tabs and newlines and treats a backslash
+  // as a separator, so "/\evil.com" and "/<tab>\evil.com" both resolve to a
+  // foreign origin while looking like same-site paths to a string check.
+  try {
+    const url = new URL(raw, window.location.origin);
+    if (url.origin !== window.location.origin) return "/lobby";
+    return url.pathname + url.search + url.hash;
+  } catch {
+    return "/lobby";
+  }
 }
 
 export function AuthForm({ mode }: { mode: "login" | "register" }) {

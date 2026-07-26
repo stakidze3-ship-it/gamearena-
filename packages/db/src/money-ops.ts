@@ -243,6 +243,9 @@ export async function registerTournamentEntryIn(
   userId: string,
   entryTetri: number
 ) {
+  // A free entry moves no money. The ledger rightly refuses zero-amount
+  // entries, so posting one would fail the whole registration.
+  if (entryTetri <= 0) return null;
   return postTransactionIn(db, {
     kind: "TOURNAMENT_ENTRY",
     refType: "tournament",
@@ -269,7 +272,11 @@ export async function settleTournamentIn(
   const totalPrizes = winners.reduce((s, w) => s + w.prizeTetri, 0);
   const diff = poolTetri - totalPrizes; // >0 keep as rake, <0 treasury tops up
   const entries: { accountKey: string; amountTetri: number }[] = [
-    { accountKey: AccountKeys.tournamentEscrow(tournamentId), amountTetri: -poolTetri },
+    // A freeroll escrows nothing; its prizes come entirely from the guarantee,
+    // and a zero-amount escrow entry would be rejected by the ledger.
+    ...(poolTetri > 0
+      ? [{ accountKey: AccountKeys.tournamentEscrow(tournamentId), amountTetri: -poolTetri }]
+      : []),
     ...winners
       .filter((w) => w.prizeTetri > 0)
       .map((w) => ({ accountKey: AccountKeys.userCash(w.userId), amountTetri: w.prizeTetri })),

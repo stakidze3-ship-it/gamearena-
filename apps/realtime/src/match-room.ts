@@ -87,6 +87,7 @@ export class MatchRoom {
     if (this.ended) return;
     const p = this.players.find((x) => x.userId === userId);
     if (!p) return;
+    if (!input || typeof input !== "object") return; // frames are attacker-controlled
     const { t, s, r, c } = input;
     if (typeof t !== "number" || t < 0 || t > this.durationMs || t < p.lastT) return;
     if (![s, r, c].every((n) => Number.isInteger(n))) return;
@@ -106,11 +107,18 @@ export class MatchRoom {
     }
   }
 
-  /** A human dropped — finalize now so the escrow always resolves. */
+  /**
+   * A human dropped. Detach their socket but let the match run its clock: their
+   * board simply stops scoring, and the opponent keeps every second they are
+   * entitled to. Settling on disconnect would let whoever is ahead close the
+   * socket to bank a win while the other player still had time to catch up.
+   *
+   * Escrow still always resolves — start() is scheduled unconditionally and
+   * arms a hard cutoff that ends the match regardless of who is connected.
+   */
   onDisconnect(userId: string): void {
     const p = this.players.find((x) => x.userId === userId);
     if (p) p.ws = null;
-    if (!this.ended) void this.end();
   }
 
   async end(): Promise<void> {
@@ -127,6 +135,7 @@ export class MatchRoom {
     const winner = draw ? null : a.score > b.score ? a : b;
     const aResult = draw ? 0.5 : a.score > b.score ? 1 : 0;
 
+    let settled = true;
     try {
       await prisma.$transaction(async (db) => {
         // ── Glicko-2: update both players for this game ──
@@ -183,30 +192,46 @@ export class MatchRoom {
         }
       });
     } catch (err) {
-      console.error(`[match ${this.matchId}] settlement failed`, err);
+      settled = false;
+      // Escrow is still holding both stakes and the match is still ACTIVE in
+      // the database — this needs a human to reconcile it. Telling the players
+      // a result at this point would be a lie: they may not have been paid.
+      console.error(
+        `[match ${this.matchId}] SETTLEMENT FAILED — escrow unresolved, needs manual reconciliation`,
+        err
+      );
     }
 
     // ── Anti-cheat signals (advisory, human players only) ──
     await this.runAntiCheat();
 
-    const { payoutTetri, rakeTetri } = settlePot(this.potTetri, this.rakeBps);
-    for (const p of this.players) {
-      const opp = this.other(p.userId);
-      const outcome = draw ? "draw" : winner!.userId === p.userId ? "win" : "loss";
-      const net = draw ? 0 : outcome === "win" ? payoutTetri - this.stakeTetri : -this.stakeTetri;
-      send(p.ws, {
-        t: "result",
-        matchId: this.matchId,
-        youScore: p.score,
-        oppScore: opp.score,
-        outcome,
-        stakeTetri: this.stakeTetri,
-        potTetri: this.potTetri,
-        payoutTetri: draw ? this.stakeTetri : payoutTetri,
-        rakeTetri: draw ? 0 : rakeTetri,
-        netTetri: net,
-        seed: this.seed,
-      });
+    if (settled) {
+      const { payoutTetri, rakeTetri } = settlePot(this.potTetri, this.rakeBps);
+      for (const p of this.players) {
+        const opp = this.other(p.userId);
+        const outcome = draw ? "draw" : winner!.userId === p.userId ? "win" : "loss";
+        const net = draw ? 0 : outcome === "win" ? payoutTetri - this.stakeTetri : -this.stakeTetri;
+        send(p.ws, {
+          t: "result",
+          matchId: this.matchId,
+          youScore: p.score,
+          oppScore: opp.score,
+          outcome,
+          stakeTetri: this.stakeTetri,
+          potTetri: this.potTetri,
+          payoutTetri: draw ? this.stakeTetri : payoutTetri,
+          rakeTetri: draw ? 0 : rakeTetri,
+          netTetri: net,
+          seed: this.seed,
+        });
+      }
+    } else {
+      for (const p of this.players) {
+        send(p.ws, {
+          t: "error",
+          message: "Match settlement hit a problem — support will make this right.",
+        });
+      }
     }
 
     this.onCleanup(this.matchId);
