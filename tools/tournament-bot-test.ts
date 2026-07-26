@@ -198,11 +198,48 @@ async function main() {
     `recovered ${formatTetri(recovered)}, ${botBalances.filter((b) => b.balanceTetri !== 0).length} non-zero`
   );
 
-  const treasuryAfter = await getBalanceTetri(prisma, AccountKeys.treasury());
+  // Scoped to THIS tournament's own postings, not the global treasury balance.
+  // Anything else touching the ledger concurrently — another tab playing Blitz,
+  // a parallel test — moves the global figure and would fail this for reasons
+  // that have nothing to do with the tournament.
+  const treasuryAcc = await prisma.account.findUniqueOrThrow({
+    where: { key: AccountKeys.treasury() },
+  });
+  const mine = await prisma.ledgerEntry.findMany({
+    where: {
+      accountId: treasuryAcc.id,
+      tx: {
+        OR: [
+          { refType: "tournament", refId: t.id },
+          { memo: { contains: t.id } },
+        ],
+      },
+    },
+    select: { amountTetri: true },
+  });
+  const netTreasury = mine.reduce((n, e) => n + e.amountTetri, 0);
+  // The sweep is deliberately excluded from the funding check. Bots are
+  // persistent and reused, so a sweep legitimately reclaims residue left on
+  // them by an EARLIER event as well as this one's prizes — recovering more
+  // than this tournament minted is the sweep working, not a leak. What must
+  // hold here is narrower: this event funded exactly its own entries.
+  const funding = await prisma.ledgerEntry.findMany({
+    where: {
+      accountId: treasuryAcc.id,
+      tx: { kind: "ADJUSTMENT", memo: { contains: `Bot entry · ${t.id}` } },
+    },
+    select: { amountTetri: true },
+  });
+  const funded = -funding.reduce((n, e) => n + e.amountTetri, 0);
   check(
-    "treasury nets out the whole test",
-    treasuryBefore - treasuryAfter === pool - recovered,
-    `net cost ${formatTetri(treasuryBefore - treasuryAfter)} of ${formatTetri(pool)} staked`
+    "treasury funded exactly this event's entries",
+    funded === pool,
+    `${formatTetri(funded)} minted for a ${formatTetri(pool)} field`
+  );
+  check(
+    "the sweep never costs the treasury money",
+    netTreasury >= 0,
+    `net ${formatTetri(netTreasury)} across ${mine.length} postings (surplus = residue reclaimed)`
   );
 
   console.log(`\n${failures === 0 ? "PASS" : `FAIL (${failures})`}\n`);

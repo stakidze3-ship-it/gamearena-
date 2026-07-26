@@ -147,7 +147,7 @@ async function buildRows(tab: Tab, meId: string, gameId: string): Promise<Row[]>
       isBot: r.user.isBot,
       isMe: r.userId === meId,
       metric: String(Math.round(r.rating)),
-      sub: `${r.matchesPlayed} matches · ${r.wins} wins`,
+      sub: `${r.matchesPlayed} ${r.matchesPlayed === 1 ? "match" : "matches"} · ${r.wins} ${r.wins === 1 ? "win" : "wins"}`,
     }));
   }
 
@@ -164,6 +164,6 @@ async function buildRows(tab: Tab, meId: string, gameId: string): Promise<Row[]>
     isBot: r.user.isBot,
     isMe: r.userId === meId,
     metric: String(Math.round(r.rating)),
-    sub: `${r.matchesPlayed} matches · ${r.wins} wins`,
+    sub: `${r.matchesPlayed} ${r.matchesPlayed === 1 ? "match" : "matches"} · ${r.wins} ${r.wins === 1 ? "win" : "wins"}`,
   }));
 }

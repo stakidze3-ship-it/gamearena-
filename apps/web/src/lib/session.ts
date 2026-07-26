@@ -36,10 +36,22 @@ export async function createRealtimeTicket(payload: SessionPayload): Promise<str
     .sign(secretKey());
 }
 
+/**
+ * Verify a SESSION token.
+ *
+ * Rejects realtime tickets outright. Both are signed with the same secret, but
+ * a ticket is deliberately readable by JavaScript — it is returned in JSON so
+ * the browser can put it on a WebSocket URL, and it is then sent to a separate
+ * service on another host. The session cookie is httpOnly precisely so that a
+ * cross-site script cannot steal it; accepting a ticket here handed out an
+ * exfiltratable credential worth exactly as much, admin role included. A token
+ * is only ever valid for the purpose it was minted for.
+ */
 export async function verifySessionToken(token: string): Promise<SessionPayload | null> {
   try {
     const { payload } = await jwtVerify(token, secretKey());
     if (!payload.sub) return null;
+    if (payload.kind === "rt") return null; // a WebSocket ticket is not a session
     return {
       sub: payload.sub,
       un: (payload.un as string) ?? "",

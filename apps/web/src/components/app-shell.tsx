@@ -192,7 +192,10 @@ export function AppShell({
 
       {/* ── Mobile bottom tabs ── */}
       <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-white/5 bg-bg/85 backdrop-blur-md backdrop-saturate-150 md:hidden">
-        <div className="grid grid-cols-4">
+        {/* Column count follows the item count. Hardcoding four wrapped the bar
+            to two rows the moment a fifth tab appeared for admins — and since
+            the bar is fixed to the bottom, that silently covered page content. */}
+        <div className="grid" style={{ gridTemplateColumns: `repeat(${primary.length}, minmax(0, 1fr))` }}>
           {primary.map((item) => {
             const active = pathname.startsWith(item.href);
             return (

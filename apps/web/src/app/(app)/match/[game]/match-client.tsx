@@ -305,7 +305,7 @@ export function MatchClient({
                 : "Searching for a rated opponent near your stake…"}
         </p>
         {linkDown && (
-          <p className="mt-2 text-sm text-subtle">
+          <p className="mt-2 text-sm text-muted">
             Your place in the queue is held while we reconnect.
           </p>
         )}

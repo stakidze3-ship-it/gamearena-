@@ -142,6 +142,13 @@ wss.on("connection", (ws, req) => {
     if (token) {
       try {
         const { payload } = await jwtVerify(token, secret);
+        // Defence in depth, mirroring verifySessionToken on the web side: a
+        // session cookie must not work as a WebSocket ticket either. Only a
+        // token minted for this purpose gets in.
+        if (payload.kind !== "rt") {
+          ws.close(4001, "invalid ticket");
+          return;
+        }
         userId = payload.sub ?? null;
         username = (payload.un as string) ?? "";
       } catch {
