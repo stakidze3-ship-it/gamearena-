@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "TxKind" ADD VALUE 'MANUAL_REFUND';

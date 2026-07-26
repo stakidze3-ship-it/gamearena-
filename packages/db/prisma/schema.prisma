@@ -119,6 +119,10 @@ enum TxKind {
   DEPOSIT
   WITHDRAWAL
   ADJUSTMENT
+  /// An operator crediting a player by hand — a goodwill refund, a support
+  /// resolution. Distinct from ADJUSTMENT, which is machinery (bot funding,
+  /// balance resets), so the two are never confused in an audit.
+  MANUAL_REFUND
 }
 
 model LedgerTransaction {
