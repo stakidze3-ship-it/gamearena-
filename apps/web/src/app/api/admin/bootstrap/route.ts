@@ -66,6 +66,6 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     ok: true,
     username: user.username,
-    note: "Log out and back in so the session carries the new role.",
+    note: "The role takes effect immediately — no need to sign out.",
   });
 }

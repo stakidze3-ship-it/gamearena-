@@ -48,11 +48,14 @@ const MENU: NavItem[] = [
 export function AppShell({
   username,
   isAdmin,
+  canClaimAdmin = false,
   balanceTetri,
   children,
 }: {
   username: string;
   isAdmin: boolean;
+  /** Not an admin yet, but allowed to enable the tools. */
+  canClaimAdmin?: boolean;
   balanceTetri: number;
   children: React.ReactNode;
 }) {
@@ -82,6 +85,14 @@ export function AppShell({
     ? [...MENU, { href: "/admin", label: "Admin", icon: IconShield }]
     : MENU;
 
+  // Tournament testing sits in the TOP BAR, not buried in the profile menu —
+  // an operator should not have to go hunting for it. Shown to admins and to
+  // anyone eligible to become one, since the first owner needs to find it
+  // before they have the role. Ordinary players never see it.
+  const primary = isAdmin || canClaimAdmin
+    ? [...PRIMARY, { href: "/testing", label: "Testing", icon: IconShield }]
+    : PRIMARY;
+
   return (
     <div className="min-h-dvh">
       {/* ── Top bar ── */}
@@ -90,7 +101,7 @@ export function AppShell({
           <div className="flex items-center gap-8">
             <Logo href="/lobby" />
             <nav className="hidden items-center gap-1 md:flex">
-              {PRIMARY.map((item) => {
+              {primary.map((item) => {
                 const active = pathname.startsWith(item.href);
                 return (
                   <Link
@@ -182,7 +193,7 @@ export function AppShell({
       {/* ── Mobile bottom tabs ── */}
       <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-white/5 bg-bg/85 backdrop-blur-md backdrop-saturate-150 md:hidden">
         <div className="grid grid-cols-4">
-          {PRIMARY.map((item) => {
+          {primary.map((item) => {
             const active = pathname.startsWith(item.href);
             return (
               <Link
