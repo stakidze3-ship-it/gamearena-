@@ -4,6 +4,8 @@ export * from "./money-ops";
 export * from "./tournaments";
 export { seedProduction } from "./seed-production";
 export * from "./bracket";
+export * from "./tournament-bots";
+export * from "./spectators";
 export * from "./review";
 export * from "./password";
 export * from "@prisma/client";

@@ -5,7 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatTetri, formatTetriCompact } from "@gamearena/shared";
 import { BlockBlastBoard, type BlockBlastResult } from "@/components/games/block-blast-board";
-import { IconCheck, IconChevronDown, IconChevronLeft, IconMedal } from "@/components/icons";
+import { IconCheck, IconChevronDown, IconChevronLeft, IconChevronRight, IconMedal } from "@/components/icons";
+import { SpectatorPanel } from "@/components/tournament/spectator-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Money } from "@/components/ui/money";
@@ -56,6 +57,8 @@ interface BracketMatchView {
   bScore: number | null;
   winner: string | null;
   status: string;
+  matchId?: string | null;
+  hasReplay?: boolean;
 }
 interface Bracket {
   rounds: { round: number; label: string; matches: BracketMatchView[] }[];
@@ -323,7 +326,16 @@ export function TournamentClient({
         t.status === "SCHEDULED" ? (
           <RegistrationBoard registration={registration} />
         ) : (
-          <BracketBoard bracket={bracket} status={t.status} ended={t.ended} lastRun={lastRun} />
+          <>
+            {/* Spectating: shown whenever the bracket is live and the viewer is
+                not mid-match. A player with a match to run should be running
+                it, not watching — but the moment they are out (or waiting on an
+                opponent) this is what keeps them here. */}
+            {t.status === "RUNNING" && phase === "idle" && (
+              <SpectatorPanel tournamentId={t.id} />
+            )}
+            <BracketBoard bracket={bracket} status={t.status} ended={t.ended} lastRun={lastRun} />
+          </>
         )
       ) : (
         <section>
@@ -788,6 +800,9 @@ function BracketCell({ m }: { m: BracketMatchView }) {
   // A null side in a resolved match is a genuine bye; before the feeders land
   // it's simply a slot still to be decided.
   const emptyLabel = m.status === "DONE" ? "— bye —" : "TBD";
+  // A future match whose players are not both known yet. Shown, but visibly
+  // not-yet-playable, so the shape of the bracket reads at a glance.
+  const locked = m.status === "PENDING";
   const row = (name: string | null, score: number | null, isWinner: boolean) => (
     <div
       className={cn(
@@ -795,7 +810,9 @@ function BracketCell({ m }: { m: BracketMatchView }) {
         isWinner ? "font-semibold text-fg" : "text-muted"
       )}
     >
-      <span className="truncate">{name ?? <span className="text-faint">{emptyLabel}</span>}</span>
+      <span className={cn("truncate", locked && "text-faint")}>
+        {name ?? <span className="text-faint">{emptyLabel}</span>}
+      </span>
       <span className="tnum shrink-0 text-xs">{score ?? ""}</span>
     </div>
   );
@@ -803,13 +820,33 @@ function BracketCell({ m }: { m: BracketMatchView }) {
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-lg border bg-surface",
-        live ? "border-gold/60" : "border-border"
+        "overflow-hidden rounded-lg border transition-colors duration-150",
+        live && "border-gold/60 bg-surface",
+        m.status === "DONE" && "border-border bg-surface",
+        locked && "border-border/50 bg-bg/40"
       )}
     >
+      {live && (
+        <div className="flex items-center gap-1.5 border-b border-gold/25 px-3 py-1">
+          <span className="relative flex h-1.5 w-1.5">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-gold opacity-60" />
+            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-gold" />
+          </span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-gold">Live</span>
+        </div>
+      )}
       {row(m.a, m.aScore, m.winner != null && m.winner === m.a)}
-      <div className="h-px bg-border" />
+      <div className={cn("h-px", locked ? "bg-border/50" : "bg-border")} />
       {row(m.b, m.bScore, m.winner != null && m.winner === m.b)}
+      {m.hasReplay && m.matchId && (
+        <Link
+          href={`/replay/bracket/${m.matchId}`}
+          className="flex items-center justify-center gap-1 border-t border-border px-3 py-1.5 text-[11px] text-muted transition-colors duration-150 hover:text-fg"
+        >
+          Watch replay
+          <IconChevronRight className="h-3 w-3" />
+        </Link>
+      )}
     </div>
   );
 }

@@ -20,5 +20,7 @@ export {
   BLOCK_BLAST_RULES_LATEST,
 } from "./engine";
 export type { BlockBlastInput, BlockBlastState, BlockBlastRulesVersion } from "./engine";
+export { planBotRun } from "./bot";
+export type { BotStrength, BotPlan } from "./bot";
 export { SHAPES } from "./pieces";
 export type { Shape, Cell } from "./pieces";

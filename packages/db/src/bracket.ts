@@ -122,7 +122,7 @@ export async function generateKnockout(tournamentId: string): Promise<number> {
       roundOne.push({
         tournamentId, round: 1, slot,
         aUserId: players[m.a!]!, bUserId: players[m.b!]!,
-        seed, seedHash: hash, openedAt: now, status: "OPEN",
+        seed, seedHash: hash, openedAt: now, startedAt: now, status: "OPEN",
       });
     }
   }
@@ -183,7 +183,14 @@ export async function currentKnockoutMatch(tournamentId: string, userId: string)
 export async function submitKnockoutScore(
   tournamentId: string,
   userId: string,
-  score: number
+  score: number,
+  /**
+   * The player's raw input stream. Stored so the match can be re-simulated and
+   * watched back later, exactly as the 1v1 path does — a tournament match that
+   * cannot be replayed is a hole in the provably-fair story, not just a missing
+   * feature. Optional so older callers keep working.
+   */
+  inputLog?: unknown[]
 ) {
   const m = await currentKnockoutMatch(tournamentId, userId);
   if (!m) return null;
@@ -200,11 +207,16 @@ export async function submitKnockoutScore(
     const isA = fresh.aUserId === userId;
     if (isA ? fresh.aPlayed : fresh.bPlayed) return null; // already ran this round
 
+    const log = inputLog ? (inputLog as unknown as Prisma.InputJsonValue) : undefined;
     const data = isA
-      ? { aScore: score, aPlayed: true }
-      : { bScore: score, bPlayed: true };
+      ? { aScore: score, aPlayed: true, ...(log !== undefined ? { aInputLog: log } : {}) }
+      : { bScore: score, bPlayed: true, ...(log !== undefined ? { bInputLog: log } : {}) };
     const updated = await db.bracketMatch.update({ where: { id: fresh.id }, data });
     if (updated.aPlayed && updated.bPlayed) {
+      await db.bracketMatch.update({
+        where: { id: fresh.id },
+        data: { finishedAt: new Date() },
+      });
       await resolveMatchIn(db, updated, rounds);
     }
     return updated;
@@ -219,7 +231,12 @@ async function roundCount(tournamentId: string): Promise<number> {
   return top._max.round ?? 1;
 }
 
-type BracketMatchRow = Prisma.BracketMatchGetPayload<object>;
+/**
+ * A bracket row as the hot paths read it — without the replay logs, which are
+ * omitted from every bulk query. Anything that genuinely needs a log asks for
+ * it explicitly rather than widening this.
+ */
+type BracketMatchRow = Omit<Prisma.BracketMatchGetPayload<object>, "aInputLog" | "bInputLog">;
 
 /**
  * Take a row lock on a bracket match for the rest of the transaction.
@@ -307,6 +324,7 @@ export async function advanceKnockout(tournamentId: string): Promise<void> {
   if (!t || t.format !== "KNOCKOUT" || t.status !== "RUNNING" || !t.bracketStartedAt) return;
 
   let all = await prisma.bracketMatch.findMany({
+    omit: { aInputLog: true, bInputLog: true },
     where: { tournamentId },
     orderBy: [{ round: "asc" }, { slot: "asc" }],
   });
@@ -317,6 +335,7 @@ export async function advanceKnockout(tournamentId: string): Promise<void> {
   // on the same round seed.
   if (await seatThirdPlaceMatch(tournamentId, all, rounds)) {
     all = await prisma.bracketMatch.findMany({
+    omit: { aInputLog: true, bInputLog: true },
       where: { tournamentId },
       orderBy: [{ round: "asc" }, { slot: "asc" }],
     });
@@ -339,7 +358,7 @@ export async function advanceKnockout(tournamentId: string): Promise<void> {
           tournamentId, round: r, status: "PENDING",
           aUserId: { not: null }, bUserId: { not: null },
         },
-        data: { seed, seedHash: hash, openedAt: now, status: "OPEN" },
+        data: { seed, seedHash: hash, openedAt: now, startedAt: now, status: "OPEN" },
       });
       // Re-read this round so window logic sees the freshly opened matches.
       matches.forEach((m) => {
@@ -391,7 +410,13 @@ export async function finalizeKnockout(tournamentId: string): Promise<void> {
   if (!t || t.format !== "KNOCKOUT") return;
   if (t.status === "FINISHED" || t.status === "CANCELLED") return;
 
-  const matches = await prisma.bracketMatch.findMany({ where: { tournamentId } });
+  const matches = await prisma.bracketMatch.findMany({
+    where: { tournamentId },
+    // Replay logs are kilobytes each and this reads every row of the bracket on
+    // every poll. Leaving them out keeps the hot path narrow; the replay loader
+    // asks for them explicitly.
+    omit: { aInputLog: true, bInputLog: true },
+  });
   if (matches.length === 0) return;
   const rounds = Math.max(...matches.map((m) => m.round));
   const final = matches.find((m) => m.round === rounds && m.slot === 0);
@@ -499,12 +524,15 @@ export async function cancelTournamentRefunding(tournamentId: string): Promise<v
 
 export interface BracketMatchView {
   slot: number;
+  matchId: string;
   a: string | null;
   b: string | null;
   aScore: number | null;
   bScore: number | null;
   winner: string | null;
   status: string;
+  /** Both sides played, so the match can be watched back. */
+  hasReplay: boolean;
 }
 
 export interface KnockoutView {
@@ -542,6 +570,7 @@ export async function knockoutView(
   readyWindowS: number = roundDurationS
 ): Promise<KnockoutView | null> {
   const matches = await prisma.bracketMatch.findMany({
+    omit: { aInputLog: true, bInputLog: true },
     where: { tournamentId },
     orderBy: [{ round: "asc" }, { slot: "asc" }],
   });
@@ -561,6 +590,9 @@ export async function knockoutView(
 
   const toView = (m: (typeof matches)[number]): BracketMatchView => ({
     slot: m.slot,
+    matchId: m.id,
+    // Both sides played, so both logs exist and the match can be watched back.
+    hasReplay: m.status === "DONE" && m.aPlayed && m.bPlayed,
     a: m.aUserId ? name.get(m.aUserId) ?? "—" : null,
     b: m.bUserId ? name.get(m.bUserId) ?? "—" : null,
     aScore: m.aScore,

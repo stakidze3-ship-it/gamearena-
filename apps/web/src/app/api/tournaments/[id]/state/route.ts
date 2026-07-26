@@ -3,6 +3,7 @@ import {
   advanceKnockout,
   cancelTournamentRefunding,
   currentKnockoutMatch,
+  driveBotMatches,
   generateKnockout,
   prisma,
 } from "@gamearena/db";
@@ -55,6 +56,13 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
         })
         .catch(() => {});
     } else if (pre.status === "RUNNING") {
+      // Bots first, then advance: a bot submitting can complete a pairing, and
+      // running the advance afterwards opens the next round in the same tick
+      // instead of leaving it a poll behind. driveBotMatches is a no-op unless
+      // the event actually has bots in it, and each bot only plays once its own
+      // deterministic delay has elapsed — which is what makes a bot-filled
+      // tournament unfold over minutes rather than resolving instantly.
+      await driveBotMatches(id).catch(() => {});
       await advanceKnockout(id).catch(() => {});
     }
   }

@@ -80,8 +80,8 @@ enum AccountType {
   ESCROW_MATCH
   ESCROW_TOURNAMENT
   SYS_TREASURY // issues demo credits (goes negative — the "mint")
-  SYS_RAKE     // platform revenue
-  SYS_PROMO    // funds bonuses/rakeback
+  SYS_RAKE // platform revenue
+  SYS_PROMO // funds bonuses/rakeback
 }
 
 model Account {
@@ -169,34 +169,34 @@ model Game {
 // ─────────────────────────────── Matches (1v1) ───────────────────────────────
 
 enum MatchStatus {
-  WAITING   // created, waiting for second player / countdown
-  ACTIVE    // both playing
-  SETTLED   // escrow paid out
+  WAITING // created, waiting for second player / countdown
+  ACTIVE // both playing
+  SETTLED // escrow paid out
   CANCELLED // refunded
-  HOLD      // anti-cheat hold — escrow frozen pending review
+  HOLD // anti-cheat hold — escrow frozen pending review
 }
 
 model Match {
-  id         String      @id @default(cuid())
-  gameId     String
-  game       Game        @relation(fields: [gameId], references: [id])
-  stakeTetri Int
-  rakeBps    Int
-  potTetri   Int
+  id           String      @id @default(cuid())
+  gameId       String
+  game         Game        @relation(fields: [gameId], references: [id])
+  stakeTetri   Int
+  rakeBps      Int
+  potTetri     Int
   // Provably fair: hash published to both clients BEFORE play; seed revealed after.
-  seed       String
-  seedHash   String
-  status     MatchStatus @default(WAITING)
-  isDemo     Boolean     @default(true) // demo-credit match (bots allowed only here)
+  seed         String
+  seedHash     String
+  status       MatchStatus @default(WAITING)
+  isDemo       Boolean     @default(true) // demo-credit match (bots allowed only here)
   // Scoring rules this match was created under. The replay viewer and any
   // re-simulation MUST use it, or a later rules change silently re-scores
   // history. Keep this default equal to BLOCK_BLAST_RULES_LATEST; the
   // migration backfills pre-existing rows to 1.
-  rulesVersion Int       @default(2)
+  rulesVersion Int         @default(2)
 
   winnerUserId String?
-  winner       User?     @relation("MatchWinner", fields: [winnerUserId], references: [id])
-  isDraw       Boolean   @default(false)
+  winner       User?   @relation("MatchWinner", fields: [winnerUserId], references: [id])
+  isDraw       Boolean @default(false)
 
   createdAt DateTime  @default(now())
   startedAt DateTime?
@@ -253,26 +253,26 @@ enum BlitzRunStatus {
 }
 
 model BlitzRun {
-  id          String         @id @default(cuid())
-  userId      String
-  user        User           @relation(fields: [userId], references: [id])
-  gameId      String
-  game        Game           @relation(fields: [gameId], references: [id])
-  configId    String
-  config      BlitzConfig    @relation(fields: [configId], references: [id])
-  entryTetri  Int
-  seed        String
-  seedHash    String
-  status      BlitzRunStatus @default(PENDING)
-  serverScore Int?
-  multBps     Int?
-  payoutTetri Int?
-  inputLog    Json?
-  inputCount  Int            @default(0)
+  id           String         @id @default(cuid())
+  userId       String
+  user         User           @relation(fields: [userId], references: [id])
+  gameId       String
+  game         Game           @relation(fields: [gameId], references: [id])
+  configId     String
+  config       BlitzConfig    @relation(fields: [configId], references: [id])
+  entryTetri   Int
+  seed         String
+  seedHash     String
+  status       BlitzRunStatus @default(PENDING)
+  serverScore  Int?
+  multBps      Int?
+  payoutTetri  Int?
+  inputLog     Json?
+  inputCount   Int            @default(0)
   // See Match.rulesVersion.
-  rulesVersion Int           @default(2)
-  createdAt   DateTime       @default(now())
-  settledAt   DateTime?
+  rulesVersion Int            @default(2)
+  createdAt    DateTime       @default(now())
+  settledAt    DateTime?
 
   @@index([gameId, status, createdAt]) // score-distribution queries for calibration
   @@index([userId, createdAt])
@@ -349,32 +349,36 @@ enum TournamentFormat {
 }
 
 model Tournament {
-  id             String           @id @default(cuid())
-  name           String
-  gameId         String
-  game           Game             @relation(fields: [gameId], references: [id])
-  entryTetri     Int
+  id               String           @id @default(cuid())
+  name             String
+  gameId           String
+  game             Game             @relation(fields: [gameId], references: [id])
+  entryTetri       Int
   // [{ rank: 1, shareBps: 5000 }, ...] of the prize pool
-  prizeStructure Json
-  guaranteeTetri Int              @default(0)
+  prizeStructure   Json
+  guaranteeTetri   Int              @default(0)
   // Provably fair: every entrant plays the identical seed; hash committed up front.
-  seed           String?
-  seedHash       String?
-  startsAt       DateTime
-  durationS      Int              @default(600)
-  capacity       Int              @default(100)
-  status         TournamentStatus @default(SCHEDULED)
-  format         TournamentFormat @default(LEADERBOARD)
+  seed             String?
+  seedHash         String?
+  startsAt         DateTime
+  durationS        Int              @default(600)
+  capacity         Int              @default(100)
+  status           TournamentStatus @default(SCHEDULED)
+  format           TournamentFormat @default(LEADERBOARD)
   // KNOCKOUT: per-round play window; the round advances early once everyone
   // in it has played, or forfeits the stragglers when the window closes.
-  roundDurationS Int              @default(600)
+  roundDurationS   Int              @default(600)
   // KNOCKOUT: the longer window for round 1 — players "ready up" by playing
   // their first match within it once the tournament starts, or they forfeit.
-  readyWindowS   Int              @default(600)
+  readyWindowS     Int              @default(600)
   bracketStartedAt DateTime?
-  isRecurring    Boolean          @default(false)
-  createdAt      DateTime         @default(now())
-  finishedAt     DateTime?
+  // A test event, filled with bots by an admin. Its prize pool is largely
+  // treasury-minted, so it must never appear in real standings or public
+  // listings. Set once at bot-fill time and never cleared.
+  isTest           Boolean          @default(false)
+  isRecurring      Boolean          @default(false)
+  createdAt        DateTime         @default(now())
+  finishedAt       DateTime?
 
   entries        TournamentEntry[]
   bracketMatches BracketMatch[]
@@ -384,8 +388,8 @@ model Tournament {
 
 enum BracketMatchStatus {
   PENDING // waiting on feeder rounds / round not open yet
-  OPEN    // round is live, both participants may play their run
-  DONE    // resolved, winner advanced
+  OPEN // round is live, both participants may play their run
+  DONE // resolved, winner advanced
 }
 
 // One head-to-head pairing in a knockout bracket. round 1 = first round;
@@ -408,9 +412,52 @@ model BracketMatch {
   bPlayed      Boolean            @default(false)
   winnerUserId String?
   status       BracketMatchStatus @default(PENDING)
+  // Replays. Each side's raw input stream, exactly as the 1v1 path stores it,
+  // so a finished bracket match can be re-simulated and watched. rulesVersion
+  // pins the scoring these logs were settled under — see Match.rulesVersion.
+  aInputLog    Json?
+  bInputLog    Json?
+  rulesVersion Int                @default(2)
+  startedAt    DateTime?
+  finishedAt   DateTime?
 
   @@unique([tournamentId, round, slot])
   @@index([tournamentId, round])
+  // Spectator screens ask for "every live match in this tournament".
+  @@index([tournamentId, status])
+}
+
+/**
+ * Who is watching what, right now.
+ * One row per (match, viewer), upserted on a heartbeat that is deliberately
+ * slower than the score poll — viewers refresh scores every couple of seconds
+ * but only announce themselves every ten, so 10k concurrent spectators cost
+ * ~1k writes/s rather than ~5k. The composite primary key makes each heartbeat
+ * a single index write with no row growth, and stale rows are swept by age.
+ * Counts are read per TOURNAMENT, not per match, so a spectator screen showing
+ * every live match still costs one query.
+ * Postgres is the right home at this scale. Past roughly ten thousand
+ * concurrent viewers this wants a Redis sorted set or an edge counter; the
+ * read/write shape here maps onto either without touching callers.
+ */
+model SpectatorHeartbeat {
+  tournamentId String
+  /** Which match this viewer currently has open. Mutable — see the key. */
+  matchId      String
+  viewerId     String
+  lastSeenAt   DateTime @default(now())
+
+  // Keyed by VIEWER, not by (match, viewer). A viewer watches exactly one match
+  // at a time, so switching must UPDATE this row rather than insert a second
+  // one — keyed per match, a viewer who switched would go on being counted in
+  // the match they left until their old row aged out, and the counts would read
+  // high for everyone. One row per viewer makes double-counting impossible.
+  //
+  // No secondary indexes on purpose. tournamentId already leads the key, so the
+  // per-tournament group-by is a primary-key range scan; and matchId/lastSeenAt
+  // are exactly the columns a heartbeat rewrites, so indexing them would turn
+  // every heartbeat into a non-HOT update and bloat the table for nothing.
+  @@id([tournamentId, viewerId])
 }
 
 model TournamentEntry {
@@ -516,10 +563,10 @@ model Challenge {
 
 model LoyaltyWeek {
   userId        String
-  user          User     @relation(fields: [userId], references: [id])
+  user          User      @relation(fields: [userId], references: [id])
   weekStart     DateTime // Monday 00:00 UTC
-  rakeTetri     Int      @default(0)
-  tier          String   @default("BRONZE")
+  rakeTetri     Int       @default(0)
+  tier          String    @default("BRONZE")
   rakebackTetri Int?
   paidAt        DateTime?
 
