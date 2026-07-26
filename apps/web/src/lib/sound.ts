@@ -12,14 +12,30 @@ let muted = false;
 
 const MUTE_KEY = "ga.muted";
 
+/**
+ * The `typeof window` checks below guard server rendering. They do NOT make
+ * these calls safe: a browser with site data blocked throws SecurityError from
+ * localStorage itself. `initMuted` runs in the board's mount effect, and an
+ * error thrown from an effect propagates to the nearest error boundary — so an
+ * unreachable preference would take the whole match screen down. A mute setting
+ * is never worth a crash; failing to the default is the correct outcome.
+ */
 export function initMuted(): boolean {
-  if (typeof window !== "undefined") muted = window.localStorage.getItem(MUTE_KEY) === "1";
+  try {
+    if (typeof window !== "undefined") muted = window.localStorage.getItem(MUTE_KEY) === "1";
+  } catch {
+    /* storage unavailable — keep the default */
+  }
   return muted;
 }
 
 export function setMuted(m: boolean): void {
   muted = m;
-  if (typeof window !== "undefined") window.localStorage.setItem(MUTE_KEY, m ? "1" : "0");
+  try {
+    if (typeof window !== "undefined") window.localStorage.setItem(MUTE_KEY, m ? "1" : "0");
+  } catch {
+    /* the preference just will not persist */
+  }
 }
 
 function audio(): AudioContext | null {

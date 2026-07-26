@@ -544,6 +544,7 @@ export interface KnockoutView {
   /** The bronze match, once both semifinals are decided. */
   thirdPlace: BracketMatchView | null;
   myMatch: {
+    id: string;
     round: number;
     label: string;
     seed: string | null;
@@ -618,6 +619,9 @@ export async function knockoutView(
   const mine = await currentKnockoutMatch(tournamentId, viewerId);
   const myMatch = mine
     ? {
+        // Carried so a crash report can name the exact match, not just the
+        // tournament — the difference between "a match broke" and "this one".
+        id: mine.id,
         round: mine.round,
         label: isBronze(mine) ? "Third place" : roundLabel(mine.round, rounds),
         isThirdPlace: isBronze(mine),

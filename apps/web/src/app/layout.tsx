@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter, Noto_Sans_Georgian, Archivo, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { I18nProvider } from "@/lib/i18n";
+import { TelemetryInit } from "@/components/telemetry-init";
 
 const inter = Inter({
   subsets: ["latin", "latin-ext"],
@@ -51,6 +52,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       className={`${inter.variable} ${notoGeorgian.variable} ${archivo.variable} ${jetbrainsMono.variable}`}
     >
       <body className="min-h-dvh font-sans text-base">
+        <TelemetryInit />
         <I18nProvider>{children}</I18nProvider>
       </body>
     </html>
