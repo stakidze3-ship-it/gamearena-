@@ -44,7 +44,7 @@ export default async function TestingPage() {
   return (
     <div className="mx-auto max-w-3xl space-y-6 py-2">
       <div>
-        <h1 className="text-2xl font-semibold">Tournament testing</h1>
+        <h1 className="text-2xl font-semibold">Tournaments &amp; testing</h1>
         <p className="mt-1.5 text-sm text-muted">
           Run a full knockout end to end without waiting for real players. Everything here happens
           through the same registration, draw, bracket and settlement paths a real event uses.

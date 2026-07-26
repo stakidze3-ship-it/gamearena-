@@ -126,11 +126,50 @@ export function TestingConsole({
         </p>
       )}
 
+      {/* ── Live event ── */}
+      <section className="rounded-2xl border border-gold/40 bg-surface px-5 py-4">
+        <p className="font-medium">Live tournament</p>
+        <p className="mt-0.5 text-sm text-muted">
+          A real event, visible on the Tournaments page and open for entry immediately. Not a
+          test — players are charged and winners are paid.
+        </p>
+        <div className="mt-3 rounded-lg border border-border bg-bg px-3 py-2.5 text-xs text-muted">
+          <p className="font-medium text-fg-secondary">Block Blast Championship</p>
+          <p className="tnum mt-1">
+            32 seats · ₾5 entry · ₾160 pool · single elimination + third-place playoff
+          </p>
+          <p className="tnum mt-0.5">🥇 ₾80 · 🥈 ₾50 · 🥉 ₾30</p>
+        </div>
+        <Button
+          variant="primary"
+          className="mt-3"
+          disabled={busy === "championship"}
+          onClick={async () => {
+            const data = await call("championship", "/api/admin/tournaments/create", {
+              name: "Block Blast Championship",
+              gameKey: "block-blast",
+              capacity: 32,
+              entryLari: 5,
+              prizesLari: [80, 50, 30],
+            });
+            if (data) {
+              setNote({
+                text: `Created "${data.name as string}" — live on the Tournaments page now.`,
+                ok: true,
+              });
+              router.refresh();
+            }
+          }}
+        >
+          {busy === "championship" ? "Creating…" : "Create Block Blast Championship"}
+        </Button>
+      </section>
+
       {/* ── Create ── */}
       <section className="rounded-2xl border border-border bg-surface px-5 py-4">
-        <p className="font-medium">1 · Create a test tournament</p>
+        <p className="font-medium">1 · Create a TEST tournament</p>
         <p className="mt-0.5 text-sm text-muted">
-          Disposable and flagged as a test, so your real event is never touched.
+          Disposable and flagged as a test — hidden from players, so your real event is never touched.
         </p>
         <div className="mt-3 flex flex-wrap items-end gap-3">
           <label className="text-xs text-muted">
@@ -196,7 +235,7 @@ export function TestingConsole({
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <p className="truncate font-medium">{t.name}</p>
-                        {t.isTest && <Badge tone="amber">Test</Badge>}
+                        {t.isTest && <Badge tone="amber">Test · hidden from players</Badge>}
                         <Badge tone={live ? "gold" : t.status === "FINISHED" ? "muted" : "neutral"}>
                           {t.status}
                         </Badge>
