@@ -7,6 +7,8 @@ import {
   hashPassword,
   prisma,
 } from "@gamearena/db";
+import { RATE_LIMITS, consumeRateLimit } from "@gamearena/db";
+import { clientIp } from "@/lib/client-ip";
 import { registerSchema } from "@/lib/validation";
 import { createSessionToken, setSessionCookie } from "@/lib/session";
 
@@ -27,6 +29,17 @@ export async function POST(req: NextRequest) {
     );
   }
   const { email, username, password, referralCode } = parsed.data;
+
+  // Every signup mints ₾5 of demo credit from the treasury, so unlimited
+  // registration is a faucet as well as a spam vector.
+  const ip = clientIp(req);
+  const quota = await consumeRateLimit(RATE_LIMITS.registerPerIp, ip);
+  if (!quota.allowed) {
+    return NextResponse.json(
+      { error: "Too many accounts created from here. Try again later." },
+      { status: 429, headers: { "Retry-After": String(quota.retryAfterSeconds) } }
+    );
+  }
 
   // Resolve an optional referral code to the referring user.
   const referrer = referralCode
