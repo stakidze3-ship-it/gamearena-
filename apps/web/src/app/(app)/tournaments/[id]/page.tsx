@@ -86,6 +86,7 @@ export default async function TournamentDetailPage({
   return (
     <TournamentClient
       isAdmin={user.role === "ADMIN"}
+      username={user.username}
       balanceTetri={balanceTetri}
       bracket={bracket}
       registration={registration}

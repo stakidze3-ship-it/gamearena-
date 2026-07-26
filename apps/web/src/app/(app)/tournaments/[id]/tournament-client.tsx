@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatTetri, formatTetriCompact } from "@gamearena/shared";
 import { BlockBlastBoard, type BlockBlastResult } from "@/components/games/block-blast-board";
 import { IconCheck, IconChevronDown, IconChevronLeft, IconChevronRight, IconMedal } from "@/components/icons";
-import { SpectatorPanel } from "@/components/tournament/spectator-panel";
+import { ConfettiBurst } from "@/components/confetti";
+import { ChampionBanner, SpectatorPanel } from "@/components/tournament/spectator-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Money } from "@/components/ui/money";
@@ -88,6 +89,7 @@ export function TournamentClient({
   myEntry,
   balanceTetri,
   isAdmin,
+  username,
   bracket,
   registration,
 }: {
@@ -96,6 +98,7 @@ export function TournamentClient({
   myEntry: { registered: boolean; bestScore: number | null };
   balanceTetri: number;
   isAdmin: boolean;
+  username: string;
   bracket: Bracket | null;
   registration: Registration | null;
 }) {
@@ -212,6 +215,53 @@ export function TournamentClient({
 
   const myRoundLabel = isKnockout && bracket?.myMatch ? bracket.myMatch.label : null;
 
+  // Where the viewer stands in the bracket, derived rather than stored: the
+  // last DONE match containing them tells the whole story. A semifinal loss is
+  // NOT elimination — the bronze match is still coming — which is exactly the
+  // kind of state a player panics about if the page gets it wrong.
+  const standing = useMemo(() => {
+    if (!isKnockout || !bracket || !myEntry.registered) return null;
+    const bronze = bracket.thirdPlace;
+    if (bronze && bronze.status === "DONE" && (bronze.a === username || bronze.b === username)) {
+      return bronze.winner === username
+        ? { kind: "placed" as const, label: "Third place" }
+        : { kind: "placed" as const, label: "Fourth place" };
+    }
+    for (const r of [...bracket.rounds].reverse()) {
+      for (const m of r.matches) {
+        if (m.status !== "DONE" || !m.winner) continue;
+        if (m.a !== username && m.b !== username) continue;
+        if (m.winner === username) return { kind: "alive" as const, label: r.label };
+        const isSemi = r.label === "Semifinals";
+        // A semifinal loss is never elimination. The bronze shell is only
+        // seated once BOTH semis resolve, so for a moment there is no bronze
+        // row at all — a null here still means "your third-place match is
+        // coming", not "you're out".
+        if (isSemi && (!bronze || bronze.status !== "DONE")) {
+          return { kind: "bronze-coming" as const, label: r.label };
+        }
+        if (r.label === "Final") return { kind: "placed" as const, label: "Runner-up" };
+        return { kind: "out" as const, label: r.label };
+      }
+    }
+    return { kind: "alive" as const, label: null };
+  }, [isKnockout, bracket, myEntry.registered, username]);
+
+  // The settled final, for the champion moment and its replay.
+  const finalMatch =
+    isKnockout && bracket && bracket.rounds.length > 0
+      ? bracket.rounds[bracket.rounds.length - 1]!.matches[0] ?? null
+      : null;
+  const championName = t.status === "FINISHED" ? finalMatch?.winner ?? null : null;
+  const firstPrizeTetri = (() => {
+    const top = t.prizeStructure.find((x) => x.rank === 1);
+    if (!top) return 0;
+    // From entries, not the live escrow: by the time a champion exists the
+    // escrow has been paid out and reads zero.
+    const pool = Math.max(t.poolTetri, t.entryCount * t.entryTetri);
+    return Math.floor((pool * top.shareBps) / 10_000);
+  })();
+
   return (
     <div className="mx-auto max-w-xl space-y-10">
       <Link
@@ -227,7 +277,7 @@ export function TournamentClient({
         <p className="text-xs font-medium uppercase tracking-wider text-muted">
           {t.gameName} · {isKnockout ? "Single-elimination knockout" : "Shared-seed leaderboard"}
         </p>
-        <h1 className="mt-2 font-display text-xl font-bold tracking-tight md:text-2xl">{t.name}</h1>
+        <h1 className="mt-2 font-display text-2xl font-bold tracking-tight md:text-3xl">{t.name}</h1>
         <p className="tnum mt-2 text-sm text-muted">
           Entry {formatTetriCompact(t.entryTetri)} · pool {formatTetri(t.poolTetri)} ·{" "}
           {t.durationS}s {isKnockout ? "per match" : "run"}
@@ -279,26 +329,21 @@ export function TournamentClient({
           <ShareInvite url={t.shareUrl} seatsLeft={seatsLeft} />
         )}
 
-        {/* Knockout play prompt */}
+        {/* The live match. Not a status line — a matchup. Who you play, what
+            round, how long you have, and one unmissable action. */}
         {isKnockout && myEntry.registered && !t.ended && (
-          canPlay ? (
-            <>
-              <p className="text-center text-sm text-muted">
-                {bracket?.myMatch?.round === 1 ? "Ready up! " : ""}Your {myRoundLabel} match
-                {bracket?.myMatch?.opponent ? ` vs ${bracket.myMatch.opponent}` : ""} is live —
-                play before the clock runs out or you forfeit.
-              </p>
-              <Button variant="primary" size="lg" className="h-14 w-full" onClick={play}>
-                {bracket?.myMatch?.round === 1 ? "Ready up & play" : "Play your match"}
-              </Button>
-              {bracket?.myMatch?.closesAt && <Countdown closesAt={bracket.myMatch.closesAt} />}
-            </>
+          canPlay && bracket?.myMatch ? (
+            <MatchHero
+              username={username}
+              label={myRoundLabel ?? "Your match"}
+              opponent={bracket.myMatch.opponent}
+              closesAt={bracket.myMatch.closesAt}
+              windowS={bracket.myMatch.round === 1 ? t.readyWindowS : t.roundDurationS}
+              readyUp={bracket.myMatch.round === 1}
+              onPlay={play}
+            />
           ) : (
-            t.status === "RUNNING" && (
-              <p className="text-center text-sm text-muted">
-                Waiting for your next match — sit tight while this round finishes.
-              </p>
-            )
+            t.status === "RUNNING" && standing && <StandbyCard standing={standing} />
           )
         )}
 
@@ -333,6 +378,30 @@ export function TournamentClient({
                 opponent) this is what keeps them here. */}
             {t.status === "RUNNING" && phase === "idle" && (
               <SpectatorPanel tournamentId={t.id} />
+            )}
+            {championName && (
+              championName === username ? (
+                <div className="relative overflow-hidden rounded-2xl border border-gold/60 bg-gradient-to-b from-gold/15 to-transparent px-6 py-10 text-center shadow-glow-gold">
+                  <ConfettiBurst />
+                  <p className="text-xs font-bold uppercase tracking-[0.2em] text-gold">Champion</p>
+                  <p className="mt-3 font-display text-4xl font-bold tracking-tight">You did it.</p>
+                  {firstPrizeTetri > 0 && (
+                    <p className="tnum mt-3 text-lg font-semibold text-gold">
+                      {formatTetri(firstPrizeTetri)} is yours
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <ChampionBanner
+                  champion={championName}
+                  prizeLabel={firstPrizeTetri > 0 ? `Takes ${formatTetri(firstPrizeTetri)}` : null}
+                  replayHref={
+                    finalMatch?.hasReplay && finalMatch.matchId
+                      ? `/replay/bracket/${finalMatch.matchId}`
+                      : null
+                  }
+                />
+              )
             )}
             <BracketBoard bracket={bracket} status={t.status} ended={t.ended} lastRun={lastRun} />
           </>
@@ -477,19 +546,173 @@ function RankLabel({ rank }: { rank: number }) {
   );
 }
 
-function Countdown({ closesAt }: { closesAt: string }) {
-  const [left, setLeft] = useState(() => Math.max(0, new Date(closesAt).getTime() - Date.now()));
-  useEffect(() => {
-    const id = setInterval(() => setLeft(Math.max(0, new Date(closesAt).getTime() - Date.now())), 1000);
-    return () => clearInterval(id);
-  }, [closesAt]);
-  const m = Math.floor(left / 60000);
-  const s = Math.floor((left % 60000) / 1000);
-  const low = left <= 60000;
+/**
+ * The live match, staged as a matchup rather than reported as a status.
+ *
+ * Everything a player needs is in one card, in reading order: the round, the
+ * two names, the clock, the action. The countdown is the second-largest thing
+ * on screen because the deadline is the one fact with a consequence (forfeit),
+ * and the button is full-width and glowing because on this screen there is
+ * exactly one thing to do.
+ */
+function MatchHero({
+  username,
+  label,
+  opponent,
+  closesAt,
+  windowS,
+  readyUp,
+  onPlay,
+}: {
+  username: string;
+  label: string;
+  opponent: string | null;
+  closesAt: string | null;
+  windowS: number;
+  readyUp: boolean;
+  onPlay: () => void;
+}) {
   return (
-    <p className="text-center text-xs text-muted">
-      Play within <span className={cn("tnum", low ? "text-coral" : "text-fg-secondary")}>{m}:{String(s).padStart(2, "0")}</span> or you forfeit
-    </p>
+    <section className="relative overflow-hidden rounded-2xl border border-gold/40 bg-gradient-to-b from-gold/10 via-surface to-surface px-5 py-7 shadow-glow-gold sm:px-8">
+      <div className="flex items-center justify-center gap-2">
+        <span className="relative flex h-2 w-2">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-gold opacity-60" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-gold" />
+        </span>
+        <p className="text-xs font-bold uppercase tracking-[0.18em] text-gold">{label} · Live</p>
+      </div>
+
+      {/* Faceoff */}
+      <div className="mt-7 flex items-center gap-3">
+        <div className="min-w-0 flex-1 text-center">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-muted">You</p>
+          <p className="mt-1 truncate font-display text-2xl font-bold tracking-tight">{username}</p>
+        </div>
+        <p className="shrink-0 font-display text-sm font-bold text-faint">VS</p>
+        <div className="min-w-0 flex-1 text-center">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-muted">Opponent</p>
+          <p className={cn("mt-1 truncate font-display text-2xl font-bold tracking-tight", !opponent && "text-muted")}>
+            {opponent ?? "TBD"}
+          </p>
+        </div>
+      </div>
+
+      {closesAt && <HeroCountdown closesAt={closesAt} windowS={windowS} />}
+
+      <Button
+        variant="primary"
+        size="lg"
+        className="mt-7 h-16 w-full text-md font-semibold shadow-glow-gold"
+        onClick={onPlay}
+      >
+        {readyUp ? "Ready up & play" : "Play your match"}
+      </Button>
+    </section>
+  );
+}
+
+/**
+ * Big drain clock: the number is the urgency, the bar is the proportion.
+ *
+ * Everything renders from WHOLE seconds, and the two time-derived nodes carry
+ * suppressHydrationWarning — the server paints this a beat before the client
+ * hydrates it, so millisecond-precision widths can never match and even the
+ * seconds can straddle a boundary. The first tick reconciles within a second.
+ */
+function HeroCountdown({ closesAt, windowS }: { closesAt: string; windowS: number }) {
+  const target = new Date(closesAt).getTime();
+  const [leftS, setLeftS] = useState(() => Math.max(0, Math.floor((target - Date.now()) / 1000)));
+  useEffect(() => {
+    const tick = () => setLeftS(Math.max(0, Math.floor((target - Date.now()) / 1000)));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [target]);
+  const low = leftS <= 60;
+  const frac = Math.max(0, Math.min(1, leftS / windowS));
+  return (
+    <div className="mt-7 text-center">
+      <p
+        suppressHydrationWarning
+        className={cn(
+          "tnum font-display text-5xl font-bold leading-none tracking-tight",
+          low ? "animate-pulse text-coral" : "text-fg"
+        )}
+      >
+        {Math.floor(leftS / 60)}:{String(leftS % 60).padStart(2, "0")}
+      </p>
+      <div className="mx-auto mt-3 h-1 w-40 overflow-hidden rounded-full bg-raised">
+        <div
+          suppressHydrationWarning
+          className={cn("h-full rounded-full transition-[width] duration-1000 ease-linear", low ? "bg-coral" : "bg-gold")}
+          style={{ width: `${Math.round(frac * 1000) / 10}%` }}
+        />
+      </div>
+      <p className="mt-2 text-xs text-muted">to play — miss it and you forfeit</p>
+    </div>
+  );
+}
+
+/**
+ * Between matches: still in, bronze coming, or out. Each state says what
+ * happens next, because "waiting" with no explanation is what makes a live
+ * event feel like a stalled dashboard.
+ */
+function StandbyCard({
+  standing,
+}: {
+  standing:
+    | { kind: "alive"; label: string | null }
+    | { kind: "bronze-coming"; label: string | null }
+    | { kind: "out"; label: string | null }
+    | { kind: "placed"; label: string };
+}) {
+  if (standing.kind === "alive") {
+    return (
+      <div className="rounded-2xl border border-gold/30 bg-surface px-5 py-6 text-center">
+        <p className="text-xs font-bold uppercase tracking-[0.18em] text-gold">
+          {standing.label ? `${standing.label} — won` : "You're in"}
+        </p>
+        <p className="mt-2 font-display text-xl font-bold tracking-tight">You're through.</p>
+        <p className="mt-2 text-sm text-muted">
+          Your next match opens the moment the round finishes — watch the rest live below.
+        </p>
+      </div>
+    );
+  }
+  if (standing.kind === "bronze-coming") {
+    return (
+      <div className="rounded-2xl border border-amber/40 bg-surface px-5 py-6 text-center">
+        <p className="text-xs font-bold uppercase tracking-[0.18em] text-amber">Third-place match</p>
+        <p className="mt-2 font-display text-xl font-bold tracking-tight">One more to play for.</p>
+        <p className="mt-2 text-sm text-muted">
+          The semifinal didn't go your way, but bronze is still on the table — your match opens
+          alongside the final.
+        </p>
+      </div>
+    );
+  }
+  if (standing.kind === "placed") {
+    return (
+      <div className="rounded-2xl border border-border bg-surface px-5 py-6 text-center">
+        <p className="flex items-center justify-center gap-1.5 text-sm font-semibold">
+          <IconMedal className="h-4 w-4 text-amber" />
+          {standing.label}
+        </p>
+        <p className="mt-2 text-sm text-muted">Great run. The rest of the bracket plays out below.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-2xl border border-border bg-surface px-5 py-6 text-center">
+      <p className="text-sm font-semibold">
+        Knocked out{standing.label ? ` in the ${standing.label}` : ""}.
+      </p>
+      <p className="mt-2 text-sm text-muted">
+        Stay for the finish — every live match is right below, and the bracket updates as it
+        happens.
+      </p>
+    </div>
   );
 }
 
