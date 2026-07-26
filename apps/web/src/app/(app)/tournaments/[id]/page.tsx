@@ -5,6 +5,7 @@ import { isAwaitingPlayers } from "@gamearena/shared";
 import { requireUser } from "@/lib/auth";
 import { tournamentInviteUrl } from "@/lib/origin";
 import { finalizeTournament, tournamentEndsAt } from "@/lib/tournaments";
+import { CrashBoundary } from "@/components/crash-boundary";
 import { TournamentClient } from "./tournament-client";
 
 export const metadata: Metadata = { title: "Tournament" };
@@ -88,6 +89,17 @@ export default async function TournamentDetailPage({
     : new Date() > tournamentEndsAt(t.startsAt, t.durationS) || t.status === "FINISHED";
 
   return (
+    <CrashBoundary
+      scope="tournament"
+      // Passed as props rather than read by a hook inside the client: this
+      // screen died once from a hook added in the wrong place, and telemetry
+      // must not be able to cause the failure it exists to report.
+      context={{
+        tournamentId: t.id,
+        matchId: bracket?.myMatch?.id,
+        playerId: user.id,
+      }}
+    >
     <TournamentClient
       isAdmin={user.role === "ADMIN"}
       username={user.username}
@@ -135,5 +147,6 @@ export default async function TournamentDetailPage({
         .sort((a, b) => (b.bestScore ?? -1) - (a.bestScore ?? -1))}
       myEntry={myEntry ? { registered: true, bestScore: myEntry.bestScore } : { registered: false, bestScore: null }}
     />
+    </CrashBoundary>
   );
 }

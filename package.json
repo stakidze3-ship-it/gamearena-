@@ -2,7 +2,7 @@
   "name": "gamearena",
   "private": true,
   "version": "0.1.0",
-  "description": "Skill-based real-money gaming platform — provably fair, server-authoritative",
+  "description": "Skill-based real-money gaming platform \u2014 provably fair, server-authoritative",
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -18,14 +18,20 @@
     "db:seed": "tsx --env-file=.env packages/db/src/seed.ts",
     "db:studio": "prisma studio --schema packages/db/prisma/schema.prisma",
     "ledger:check": "tsx --env-file=.env packages/db/src/ledger-check.ts",
-    "typecheck": "tsc -b apps/web packages/db packages/shared packages/games apps/realtime"
+    "typecheck": "tsc -b apps/web packages/db packages/shared packages/games apps/realtime",
+    "lint": "eslint .",
+    "check": "npm run typecheck && npm run lint"
   },
   "dependencies": {
     "tsx": "^4.19.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "concurrently": "^9.1.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
     "prisma": "^6.16.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.65.0"
   }
 }

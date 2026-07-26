@@ -177,6 +177,44 @@ export function TournamentClient({
     router.refresh();
   }
 
+  // EVERY hook must run before the early returns below.
+  //
+  // This lived under them, so the moment `phase` flipped to "playing" the
+  // component returned before reaching it and React saw fewer hooks than the
+  // previous render — "Rendered fewer hooks than expected". That threw on the
+  // exact click that starts a match, which made every tournament unplayable.
+  // Where the viewer stands in the bracket, derived rather than stored: the
+  // last DONE match containing them tells the whole story. A semifinal loss is
+  // NOT elimination — the bronze match is still coming — which is exactly the
+  // kind of state a player panics about if the page gets it wrong.
+  const standing = useMemo(() => {
+    if (!isKnockout || !bracket || !myEntry.registered) return null;
+    const bronze = bracket.thirdPlace;
+    if (bronze && bronze.status === "DONE" && (bronze.a === username || bronze.b === username)) {
+      return bronze.winner === username
+        ? { kind: "placed" as const, label: "Third place" }
+        : { kind: "placed" as const, label: "Fourth place" };
+    }
+    for (const r of [...bracket.rounds].reverse()) {
+      for (const m of r.matches) {
+        if (m.status !== "DONE" || !m.winner) continue;
+        if (m.a !== username && m.b !== username) continue;
+        if (m.winner === username) return { kind: "alive" as const, label: r.label };
+        const isSemi = r.label === "Semifinals";
+        // A semifinal loss is never elimination. The bronze shell is only
+        // seated once BOTH semis resolve, so for a moment there is no bronze
+        // row at all — a null here still means "your third-place match is
+        // coming", not "you're out".
+        if (isSemi && (!bronze || bronze.status !== "DONE")) {
+          return { kind: "bronze-coming" as const, label: r.label };
+        }
+        if (r.label === "Final") return { kind: "placed" as const, label: "Runner-up" };
+        return { kind: "out" as const, label: r.label };
+      }
+    }
+    return { kind: "alive" as const, label: null };
+  }, [isKnockout, bracket, myEntry.registered, username]);
+
   const prizeFor = (rank: number) => {
     const s = t.prizeStructure.find((p) => p.rank === rank);
     return s ? Math.floor((t.poolTetri * s.shareBps) / 10_000) : 0;
@@ -215,37 +253,6 @@ export function TournamentClient({
 
   const myRoundLabel = isKnockout && bracket?.myMatch ? bracket.myMatch.label : null;
 
-  // Where the viewer stands in the bracket, derived rather than stored: the
-  // last DONE match containing them tells the whole story. A semifinal loss is
-  // NOT elimination — the bronze match is still coming — which is exactly the
-  // kind of state a player panics about if the page gets it wrong.
-  const standing = useMemo(() => {
-    if (!isKnockout || !bracket || !myEntry.registered) return null;
-    const bronze = bracket.thirdPlace;
-    if (bronze && bronze.status === "DONE" && (bronze.a === username || bronze.b === username)) {
-      return bronze.winner === username
-        ? { kind: "placed" as const, label: "Third place" }
-        : { kind: "placed" as const, label: "Fourth place" };
-    }
-    for (const r of [...bracket.rounds].reverse()) {
-      for (const m of r.matches) {
-        if (m.status !== "DONE" || !m.winner) continue;
-        if (m.a !== username && m.b !== username) continue;
-        if (m.winner === username) return { kind: "alive" as const, label: r.label };
-        const isSemi = r.label === "Semifinals";
-        // A semifinal loss is never elimination. The bronze shell is only
-        // seated once BOTH semis resolve, so for a moment there is no bronze
-        // row at all — a null here still means "your third-place match is
-        // coming", not "you're out".
-        if (isSemi && (!bronze || bronze.status !== "DONE")) {
-          return { kind: "bronze-coming" as const, label: r.label };
-        }
-        if (r.label === "Final") return { kind: "placed" as const, label: "Runner-up" };
-        return { kind: "out" as const, label: r.label };
-      }
-    }
-    return { kind: "alive" as const, label: null };
-  }, [isKnockout, bracket, myEntry.registered, username]);
 
   // The settled final, for the champion moment and its replay.
   const finalMatch =

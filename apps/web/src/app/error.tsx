@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import Link from "next/link";
 import { Button, buttonClasses } from "@/components/ui/button";
+import { reportCrash } from "@/lib/telemetry";
 
 /**
  * Render-error boundary.
@@ -24,8 +25,11 @@ export default function AppError({
   reset: () => void;
 }) {
   useEffect(() => {
-    // Server-side errors are already logged; this catches the client ones.
-    console.error("[app] unhandled render error", error);
+    // A full report, not just the message: the stack, the route, which
+    // tournament and player, and any request that failed just before. Next
+    // gives this boundary no component stack — CrashBoundary supplies that for
+    // the screens that wrap themselves in one.
+    reportCrash(error, "boundary", { digest: error.digest ?? null });
   }, [error]);
 
   return (
