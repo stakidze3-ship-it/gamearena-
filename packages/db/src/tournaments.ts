@@ -154,21 +154,27 @@ export async function finalizeTournament(tournamentId: string): Promise<void> {
     winners.push({ userId: entry.userId, prizeTetri: Math.floor((prizePool * s.shareBps) / 10_000) });
   }
 
-  await prisma.$transaction(async (db) => {
-    if (pool > 0 || winners.length > 0) {
-      await settleTournamentIn(db, tournamentId, pool, winners);
-    }
-    for (let i = 0; i < ranked.length; i++) {
-      const entry = ranked[i]!;
-      const win = winners.find((w) => w.userId === entry.userId);
-      await db.tournamentEntry.update({
-        where: { tournamentId_userId: { tournamentId, userId: entry.userId } },
-        data: { rank: i + 1, prizeTetri: win?.prizeTetri ?? 0 },
+  // One rank write per entrant plus the settlement entries exceeds Prisma's
+  // default 5s budget on a large field; a rollback would leave the pool
+  // escrowed and the event stuck.
+  await prisma.$transaction(
+    async (db) => {
+      if (pool > 0 || winners.length > 0) {
+        await settleTournamentIn(db, tournamentId, pool, winners);
+      }
+      for (let i = 0; i < ranked.length; i++) {
+        const entry = ranked[i]!;
+        const win = winners.find((w) => w.userId === entry.userId);
+        await db.tournamentEntry.update({
+          where: { tournamentId_userId: { tournamentId, userId: entry.userId } },
+          data: { rank: i + 1, prizeTetri: win?.prizeTetri ?? 0 },
+        });
+      }
+      await db.tournament.update({
+        where: { id: tournamentId },
+        data: { status: "FINISHED", finishedAt: new Date() },
       });
-    }
-    await db.tournament.update({
-      where: { id: tournamentId },
-      data: { status: "FINISHED", finishedAt: new Date() },
-    });
-  });
+    },
+    { timeout: 20_000 }
+  );
 }
