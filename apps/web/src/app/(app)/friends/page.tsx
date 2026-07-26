@@ -41,9 +41,18 @@ export default async function FriendsPage({
       where: { fromUserId: me.id, status: { in: ["PENDING", "ACCEPTED"] }, expiresAt: { gt: new Date() } },
       include: { to: { select: { username: true } } },
     }),
+    // Head-to-head records, over a bounded slice of recent history.
+    //
+    // This used to load EVERY settled match the player had ever played, with
+    // their players nested, on every visit to this page — a query whose cost
+    // grows for as long as someone keeps playing, so the most engaged users get
+    // the slowest page. Newest-first with a cap keeps it flat; 500 matches is
+    // far more than any head-to-head needs to be accurate.
     prisma.match.findMany({
       where: { status: "SETTLED", players: { some: { userId: me.id } } },
       select: { winnerUserId: true, isDraw: true, players: { select: { userId: true } } },
+      orderBy: { settledAt: "desc" },
+      take: 500,
     }),
   ]);
 

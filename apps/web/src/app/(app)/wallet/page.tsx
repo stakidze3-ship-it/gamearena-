@@ -94,7 +94,10 @@ export default async function WalletPage() {
                       hour: "2-digit",
                       minute: "2-digit",
                     })}
-                    {e.tx.refType && e.tx.refId ? ` · ${e.tx.refType} ${e.tx.refId.slice(-6)}` : ""}
+                    {/* A reference is worth keeping — it is how support ties a
+                        line to an event — but "blitz ejwmmu" is plumbing, not a
+                        statement. Uppercase it and label it as what it is. */}
+                    {e.tx.refId ? ` · Ref ${e.tx.refId.slice(-6).toUpperCase()}` : ""}
                   </p>
                 </div>
                 <Money tetri={e.amountTetri} signed className="shrink-0 text-sm font-semibold" />
