@@ -32,6 +32,15 @@ import { initMuted, playClear, playGameOver, playPlace, setMuted } from "@/lib/s
  * ghost shows where it lands (green = fits, red = blocked).
  */
 
+/**
+ * How long a line-clear burst runs. Kept in lockstep with the ga-clear-burst
+ * keyframe in globals.css — if the timeout is shorter than the animation the
+ * cells snap back mid-burst, and if it is longer the board sits frozen after
+ * the effect has finished. Short enough to keep a fast player moving, long
+ * enough that a clear still reads as an event.
+ */
+const CLEAR_MS = 260;
+
 const BLOCK_COLORS = ["#8f84f5", "#4cc3f7", "#2fd9a4", "#ffb84d", "#ff7b7b", "#c98cff"];
 
 export interface BlockBlastResult {
@@ -156,15 +165,15 @@ export function BlockBlastBoard({
       if (ns.lastCleared.length) {
         for (const idx of ns.lastCleared) colorRef.current[idx] = null;
         setFlash(ns.lastCleared);
-        window.setTimeout(() => setFlash([]), 430);
+        window.setTimeout(() => setFlash([]), CLEAR_MS);
         playClear(ns.lastClearLines, ns.combo);
         // Combo streak takes priority over the simultaneous-clear callout.
         if (ns.combo >= 2) {
           setComboText(`COMBO ×${ns.combo}`);
-          window.setTimeout(() => setComboText(null), 850);
+          window.setTimeout(() => setComboText(null), 600);
         } else if (ns.lastClearLines >= 2) {
           setComboText(`${ns.lastClearLines}× CLEAR!`);
-          window.setTimeout(() => setComboText(null), 700);
+          window.setTimeout(() => setComboText(null), 500);
         }
       } else {
         playPlace();
@@ -221,8 +230,8 @@ export function BlockBlastBoard({
     if (!live || !p) return;
     live.px = p.px;
     live.py = p.py;
-
-    paintFloat(p.px, p.py, live.meta.lift);
+    // The piece was already painted synchronously by the move handler; this
+    // callback exists only to recompute the snap once per frame.
 
     const aim = originFrom(live.meta.shape, p.px, p.py, live.rect, live.meta.lift);
     const next = aim ? resolveSnap(live.meta.slot, live.meta.shape, aim) : null;
@@ -246,9 +255,21 @@ export function BlockBlastBoard({
       // so a fast flick resolves against where the pointer really went.
       const last = typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents().at(-1) ?? e : e;
       pendingRef.current = { px: last.clientX, py: last.clientY };
+
+      // Move the piece NOW, in the event handler.
+      //
+      // Deferring this to the rAF callback cost a frame on every drag: pointer
+      // events arrive between frames, so the piece was always rendered at the
+      // previous sample. Writing the transform here means it lands in the very
+      // next paint — the piece is under the finger rather than trailing it, and
+      // that one frame is most of what "laggy" feels like.
+      //
+      // Only the SNAP stays in rAF: it runs the engine's fit check and can
+      // touch React state, so it is worth coalescing to once per frame.
+      paintFloat(last.clientX, last.clientY, live.meta.lift);
       if (rafRef.current == null) rafRef.current = requestAnimationFrame(applyMove);
     },
-    [applyMove]
+    [applyMove, paintFloat]
   );
 
   const endDrag = useCallback(() => {
@@ -461,7 +482,7 @@ export function BlockBlastBoard({
                   "relative rounded-md",
                   // The ghost must appear the instant the target cell changes.
                   // A colour transition here reads as input lag, because it is.
-                  isGhost ? "transition-none" : "transition-colors duration-100",
+                  isGhost || color ? "transition-none" : "transition-colors duration-75",
                   !color && !isFlash && "bg-bg",
                   isFlash && "ga-clearing",
                   isWillClear && "ga-will-clear"
