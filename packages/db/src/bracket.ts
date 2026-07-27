@@ -142,8 +142,15 @@ export async function generateKnockout(tournamentId: string): Promise<number> {
   return players.length;
 }
 
-/** Place an advancing winner into their next-round slot (a for even, b for odd). */
-async function advanceWinnerIn(
+/**
+ * Place an advancing winner into their next-round slot (a for even, b for odd).
+ *
+ * Exported because the admin console forces players through matches by hand,
+ * and a second copy of this geometry is exactly the kind of duplication that
+ * drifts: one caller advancing into the wrong slot corrupts a live bracket in a
+ * way nobody notices until the final has the wrong two people in it.
+ */
+export async function advanceWinnerIn(
   db: Prisma.TransactionClient,
   tournamentId: string,
   round: number,
@@ -236,7 +243,7 @@ async function roundCount(tournamentId: string): Promise<number> {
  * omitted from every bulk query. Anything that genuinely needs a log asks for
  * it explicitly rather than widening this.
  */
-type BracketMatchRow = Omit<Prisma.BracketMatchGetPayload<object>, "aInputLog" | "bInputLog">;
+export type BracketMatchRow = Omit<Prisma.BracketMatchGetPayload<object>, "aInputLog" | "bInputLog">;
 
 /**
  * Take a row lock on a bracket match for the rest of the transaction.
@@ -246,13 +253,25 @@ type BracketMatchRow = Omit<Prisma.BracketMatchGetPayload<object>, "aInputLog" |
  * Postgres runs READ COMMITTED, so a bare re-read inside a transaction still
  * lets two of them see the same OPEN row and both decide it. Serialising on
  * the row is what makes "check status, then resolve" actually atomic.
+ *
+ * Exported because the admin console is a sixth driver: an operator forcing a
+ * match while the scheduler tick is resolving it is the same race, and an admin
+ * action that skipped this lock could overwrite a result a player just earned.
  */
-async function lockBracketMatchIn(db: Prisma.TransactionClient, matchId: string): Promise<void> {
+export async function lockBracketMatchIn(db: Prisma.TransactionClient, matchId: string): Promise<void> {
   await db.$queryRaw`SELECT id FROM "BracketMatch" WHERE id = ${matchId} FOR UPDATE`;
 }
 
-/** Decide a two-player match and advance its winner. Assumes it is unresolved. */
-async function resolveMatchIn(
+/**
+ * Decide a two-player match and advance its winner. Assumes it is unresolved.
+ *
+ * Exported so the admin console's "force finish" resolves a match by EXACTLY
+ * the rule the window clock would have applied a moment later — higher score,
+ * a no-show loses, the a-side breaks a dead tie. An operator hurrying a stalled
+ * round along must not be able to produce a different champion than waiting
+ * would have; a second implementation of "who won" is a second answer.
+ */
+export async function resolveMatchIn(
   db: Prisma.TransactionClient,
   m: BracketMatchRow,
   rounds: number
@@ -554,7 +573,12 @@ export interface KnockoutView {
   } | null;
 }
 
-function roundLabel(round: number, rounds: number): string {
+/**
+ * "Final" / "Semifinals" / "Round of 16" for round r of an `rounds`-deep
+ * bracket. Exported so every surface that names a round — the tournament page,
+ * the spectator list, the admin console — says the same words.
+ */
+export function knockoutRoundLabel(round: number, rounds: number): string {
   const fromTop = rounds - round; // 0 = final
   if (fromTop === 0) return "Final";
   if (fromTop === 1) return "Semifinals";
@@ -609,7 +633,7 @@ export async function knockoutView(
   for (let r = 1; r <= rounds; r++) {
     roundViews.push({
       round: r,
-      label: roundLabel(r, rounds),
+      label: knockoutRoundLabel(r, rounds),
       // The bronze match rides in the final's round but is shown on its own.
       matches: matches.filter((m) => m.round === r && !isBronze(m)).map(toView),
     });
@@ -623,7 +647,7 @@ export async function knockoutView(
         // tournament — the difference between "a match broke" and "this one".
         id: mine.id,
         round: mine.round,
-        label: isBronze(mine) ? "Third place" : roundLabel(mine.round, rounds),
+        label: isBronze(mine) ? "Third place" : knockoutRoundLabel(mine.round, rounds),
         isThirdPlace: isBronze(mine),
         seed: mine.seed,
         opponent: (() => {
