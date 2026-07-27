@@ -18,7 +18,7 @@
     "db:seed": "tsx --env-file=.env packages/db/src/seed.ts",
     "db:studio": "prisma studio --schema packages/db/prisma/schema.prisma",
     "ledger:check": "tsx --env-file=.env packages/db/src/ledger-check.ts",
-    "typecheck": "tsc -b apps/web packages/db packages/shared packages/games apps/realtime",
+    "typecheck": "tsc -b apps/web packages/db packages/shared packages/games apps/realtime && tsc --noEmit -p tools/tsconfig.json",
     "lint": "eslint .",
     "check": "npm run typecheck && npm run lint"
   },
