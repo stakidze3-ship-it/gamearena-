@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { recordError } from "@/lib/error-log";
 
 /**
  * Sink for client crash reports.
@@ -13,6 +14,13 @@ import { NextRequest, NextResponse } from "next/server";
  * fields are printed individually rather than echoed back, and nothing is
  * persisted. On Vercel these land in the runtime logs for the deployment,
  * grouped under a single greppable prefix.
+ *
+ * It also drops a one-line summary into the in-memory ring the admin console
+ * reads (see lib/error-log.ts). That ring is per-instance and lossy — the log
+ * above stays the authoritative record — but it is what makes a crash visible
+ * to an operator during the incident rather than after it. Because this
+ * endpoint is anonymous, only the short summary fields are kept: a spammer can
+ * fill the ring either way, and the log has the full evidence.
  */
 export const dynamic = "force-dynamic";
 
@@ -76,6 +84,19 @@ export async function POST(req: NextRequest) {
     "══════════════════════════════════════════════════",
   ];
   console.error(lines.join("\n"));
+
+  recordError({
+    source: "client",
+    message: report.message,
+    route: report.route,
+    scope: ctx.scope,
+    digest: report.digest,
+    stack: report.stack,
+    // The client's own clock, so the entry lines up with what the user saw. A
+    // skewed device clock only misorders one row; overwriting it with server
+    // time would hide that the report was queued and sent late.
+    at: typeof report.at === "string" ? report.at : undefined,
+  });
 
   return NextResponse.json({ ok: true });
 }

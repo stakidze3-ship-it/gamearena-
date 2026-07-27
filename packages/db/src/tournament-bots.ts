@@ -16,9 +16,21 @@
  *      from treasury first — the same thing the 1v1 demo bot already does. The
  *      treasury is the mint and is negative by design; no fake money appears
  *      from nowhere and no real player's balance is touched.
- *   3. A bot-filled tournament is marked isTest, permanently. Its prize pool is
- *      mostly treasury credit, so it must never be mistaken for a real event.
- *      Callers that surface real standings filter on it.
+ *   3. Bot provenance is recorded, but it is NOT visibility. Filling seats
+ *      stamps botFilledAt/botsSeated so an operator can always see that a
+ *      field was padded and that part of the pool is treasury credit. It does
+ *      NOT touch isTest. Coupling the two meant filling a real event silently
+ *      deleted it from the Tournaments page, which is why filling a live
+ *      tournament had to be forbidden outright.
+ *
+ * Two fill modes, because the two situations have genuinely different stakes:
+ *
+ *   · "test"          — the event is already flagged isTest. Hidden from
+ *                       players, disposable, no confirmation needed.
+ *   · "live-override" — a real, player-visible event. The caller must pass
+ *                       acknowledgeLive, because bots will compete against
+ *                       paying humans for a real prize pool. The event stays
+ *                       visible and stays non-test.
  */
 
 import { BLOCK_BLAST_RULES_LATEST, planBotRun, type BlockBlastInput } from "@gamearena/games";
@@ -63,8 +75,12 @@ function botStrength(userId: string): number {
   return 0.3 + rng.next() * 0.65;
 }
 
+export type BotFillMode = "test" | "live-override";
+
 export interface BotFillResult {
   seated: number;
+  /** Which situation this was — the UI reports live overrides differently. */
+  mode: BotFillMode;
   alreadyFull: boolean;
   entryCount: number;
   capacity: number;
@@ -78,7 +94,10 @@ export interface BotFillResult {
  * run would bloat the user table and make repeat testing noisy. They are
  * flagged isBot, which is what excludes them from real standings.
  */
-export async function ensureBotUsers(count: number): Promise<{ id: string; username: string }[]> {
+export async function ensureBotUsers(
+  count: number,
+  excludeUserIds: string[] = []
+): Promise<{ id: string; username: string }[]> {
   const existing = await prisma.user.findMany({
     where: { isBot: true, username: { not: "ARENA_BOT" } },
     select: { id: true, username: true },
@@ -134,53 +153,121 @@ export async function ensureBotUsers(count: number): Promise<{ id: string; usern
  * joinTournament sets `startsAt`, and the ordinary state-poll driver draws the
  * bracket when that countdown expires. Nothing here reaches around that.
  */
+export interface FillBotsOptions {
+  /** How many seconds the fill trigger gives the field before the draw. */
+  countdownS: number;
+  /**
+   * Required to seat bots in a live, player-visible event.
+   *
+   * Not ceremony: in a live tournament the bots pay a real entry fee into a
+   * real escrow and can win a real prize, so an operator has to say out loud
+   * that this is what they mean. A test event needs no such acknowledgement.
+   */
+  acknowledgeLive?: boolean;
+  /** Seat at most this many, rather than every empty chair. */
+  limit?: number;
+}
+
 export async function fillTournamentWithBots(
   tournamentId: string,
-  countdownS: number
+  options: FillBotsOptions | number
 ): Promise<BotFillResult> {
+  // Older callers passed a bare countdown. Keep them working rather than
+  // rewriting every call site for a signature change.
+  const opts: FillBotsOptions =
+    typeof options === "number" ? { countdownS: options } : options;
+
   const t = await prisma.tournament.findUnique({ where: { id: tournamentId } });
   if (!t) throw new Error("Tournament not found");
   if (t.status !== "SCHEDULED") throw new Error(`Cannot fill a ${t.status} tournament`);
 
   const taken = await prisma.tournamentEntry.count({ where: { tournamentId } });
-  const need = Math.max(0, t.capacity - taken);
+  const need = Math.max(0, Math.min(t.capacity - taken, opts.limit ?? Infinity));
   if (need === 0) {
-    return { seated: 0, alreadyFull: true, entryCount: taken, capacity: t.capacity, startsAt: t.startsAt };
+    return {
+      seated: 0,
+      alreadyFull: t.capacity - taken === 0,
+      entryCount: taken,
+      capacity: t.capacity,
+      startsAt: t.startsAt,
+      mode: t.isTest ? "test" : "live-override",
+    };
   }
 
-  // Refuse to touch a live event.
+  // A live event may be filled — but only deliberately.
   //
-  // Filling seats marks the tournament as a test permanently, which hides it
-  // from every player. Run against a real event that is what happens: it
-  // vanishes from the Tournaments page and cannot be brought back. Bot fill is
-  // for events created as tests, and nothing else.
-  if (!t.isTest) {
+  // This used to be a hard refusal, because filling set isTest and that hid the
+  // event from every player. Provenance now lives in its own column, so the
+  // only thing left to protect is the operator's intent: bots will take seats
+  // in a real bracket and compete for real money.
+  const mode: BotFillMode = t.isTest ? "test" : "live-override";
+  if (mode === "live-override" && !opts.acknowledgeLive) {
     throw new Error(
-      "This is a live tournament — filling it with bots would hide it from players permanently. Create a test tournament instead."
+      "This is a live, player-visible tournament. Seating bots here puts them in a real bracket competing for a real prize pool — confirm the override to proceed."
     );
   }
 
-  const bots = await ensureBotUsers(need);
+  // Never offer a bot that is already sitting in this field.
+  //
+  // ensureBotUsers returns the OLDEST bots, deterministically. Once one of them
+  // holds a seat here — after a partial fill, or after an operator removed a
+  // single bot — asking for more returns that same bot again. The old loop
+  // funded it, got `alreadyEntered` back from joinTournament, counted a seat it
+  // had not filled, and left the minted fee stranded in the bot's wallet with
+  // nothing to spend it on. Clicking Fill again repeated it, every time.
+  const alreadySeated = await prisma.tournamentEntry.findMany({
+    where: { tournamentId },
+    select: { userId: true },
+  });
+  const bots = await ensureBotUsers(
+    need,
+    alreadySeated.map((e) => e.userId)
+  );
+
   let seated = 0;
   let entryCount = taken;
   let startsAt = t.startsAt;
 
   for (const bot of bots) {
-    // Fund exactly the entry fee, from treasury, idempotent per tournament.
+    // Top the bot up to the entry fee rather than minting it outright.
+    //
+    // Funding by shortfall is self-correcting: a bot that still holds credit
+    // from an abandoned fill spends that instead of receiving a second helping,
+    // so a repeated fill cannot inflate the treasury's outlay. An idempotency
+    // key would not do this — it would also block the legitimate re-funding of
+    // a bot whose seat was removed and refunded to treasury.
     if (t.entryTetri > 0) {
-      await prisma.$transaction(async (db) => {
-        await mintDemoCreditIn(db, bot.id, t.entryTetri, `Bot entry · ${tournamentId}`);
-      });
+      const balance = await getBalanceTetri(prisma, AccountKeys.userCash(bot.id));
+      const shortfall = t.entryTetri - balance;
+      if (shortfall > 0) {
+        await prisma.$transaction(async (db) => {
+          await mintDemoCreditIn(db, bot.id, shortfall, `Bot entry · ${tournamentId}`);
+        });
+      }
     }
-    const res = await joinTournament(tournamentId, bot.id, countdownS);
+
+    const res = await joinTournament(tournamentId, bot.id, opts.countdownS);
     if (!res.ok) break; // full, or the event moved on — stop cleanly
-    seated++;
-    entryCount = res.entryCount;
-    startsAt = res.startsAt;
+    // A bot that was already in this field took no new seat. Counting it would
+    // report a fill that did not happen.
+    if (!res.alreadyEntered) {
+      seated++;
+      entryCount = res.entryCount;
+      startsAt = res.startsAt;
+    }
     if (res.full) break;
   }
 
-  return { seated, alreadyFull: false, entryCount, capacity: t.capacity, startsAt };
+  if (seated > 0) {
+    // Record that this field was padded, without hiding the event. isTest is
+    // deliberately untouched here.
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: { botFilledAt: new Date(), botsSeated: { increment: seated } },
+    });
+  }
+
+  return { seated, alreadyFull: false, entryCount, capacity: t.capacity, startsAt, mode };
 }
 
 /**

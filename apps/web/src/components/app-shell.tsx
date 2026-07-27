@@ -81,16 +81,20 @@ export function AppShell({
     router.refresh();
   }
 
-  const menuItems = isAdmin
-    ? [...MENU, { href: "/admin", label: "Admin", icon: IconShield }]
-    : MENU;
+  // No Admin entry here: it is on the top bar for anyone who can use it, and
+  // listing it twice made the console look like two different destinations.
+  const menuItems = MENU;
 
-  // Tournament testing sits in the TOP BAR, not buried in the profile menu —
-  // an operator should not have to go hunting for it. Shown to admins and to
-  // anyone eligible to become one, since the first owner needs to find it
-  // before they have the role. Ordinary players never see it.
+  // The admin console sits in the TOP BAR, not buried in the profile menu — an
+  // operator should not have to go hunting for it mid-incident. Shown to admins
+  // and to anyone eligible to become one, since the first owner needs to find
+  // it before they have the role. Ordinary players never see it.
+  //
+  // It used to say "Testing" and point at a separate page. Testing and
+  // administration are the same job done by the same person, and splitting them
+  // meant the real tools stayed hidden while the toy ones were on the top bar.
   const primary = isAdmin || canClaimAdmin
-    ? [...PRIMARY, { href: "/testing", label: "Testing", icon: IconShield }]
+    ? [...PRIMARY, { href: "/admin", label: "Admin", icon: IconShield }]
     : PRIMARY;
 
   return (

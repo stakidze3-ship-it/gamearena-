@@ -5,6 +5,7 @@ export * from "./tournaments";
 export { seedProduction } from "./seed-production";
 export * from "./bracket";
 export * from "./tournament-bots";
+export * from "./admin-ops";
 export * from "./spectators";
 export * from "./rate-limit";
 export * from "./ensure-open-event";

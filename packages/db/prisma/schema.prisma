@@ -123,6 +123,13 @@ enum TxKind {
   /// resolution. Distinct from ADJUSTMENT, which is machinery (bot funding,
   /// balance resets), so the two are never confused in an audit.
   MANUAL_REFUND
+  /// An operator moving a balance either way from the admin console: a
+  /// discretionary credit OR a discretionary debit. Separate from
+  /// MANUAL_REFUND, which only ever pays a player back and only ever goes up —
+  /// "we took money off this account by hand" is the entry an auditor most
+  /// wants to be able to find on its own, and folding it into a kind named
+  /// "refund" would bury it.
+  ADMIN_ADJUSTMENT
 }
 
 model LedgerTransaction {
@@ -376,10 +383,19 @@ model Tournament {
   // their first match within it once the tournament starts, or they forfeit.
   readyWindowS     Int              @default(600)
   bracketStartedAt DateTime?
-  // A test event, filled with bots by an admin. Its prize pool is largely
-  // treasury-minted, so it must never appear in real standings or public
-  // listings. Set once at bot-fill time and never cleared.
+  // A test event: hidden from players and excluded from real standings. Set
+  // when the event is CREATED as a test, never as a side effect of anything
+  // else — bot fill used to set it, which silently deleted live events from the
+  // Tournaments page and made filling a real tournament impossible.
   isTest           Boolean          @default(false)
+  // Bot provenance, separated from visibility.
+  //
+  // An operator needs to know a real event had seats filled by bots — the prize
+  // pool is then partly treasury-minted — but that fact must not hide the event
+  // from the players competing in it. Recording it here keeps the audit trail
+  // that isTest used to provide, without the side effect.
+  botFilledAt      DateTime?
+  botsSeated       Int              @default(0)
   isRecurring      Boolean          @default(false)
   createdAt        DateTime         @default(now())
   finishedAt       DateTime?
