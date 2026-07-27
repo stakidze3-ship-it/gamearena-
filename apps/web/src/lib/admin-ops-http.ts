@@ -50,7 +50,16 @@ const STATE_CONFLICT: RegExp[] = [
 const BAD_REQUEST: RegExp[] = [
   /not in this match/i, // the named winner is not one of the two players
   /must be a whole number|must not be zero|capped at|reference is required/i,
-  /would take the balance below zero/i,
+  // Every overdraw refusal, single-account and batch alike. Broader than the
+  // one phrasing it started as, because the bulk tools say "3 of the selected
+  // accounts would be taken below zero" and a 500 there would have an operator
+  // escalating a guard that fired exactly as designed.
+  /below zero/i,
+  /must not be negative/i, // a hand-set target under the USER_CASH floor
+  /reason is required/i, // ledger memos are not optional on a money movement
+  /select at least one account/i, // an empty bulk selection
+  /are not accounts/i, // ids in a batch that resolve to nothing
+  /bot balances are managed by/i, // a bot caught in a bulk selection
 ];
 
 const matches = (patterns: RegExp[], message: string) => patterns.some((p) => p.test(message));

@@ -1,8 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { cancelTournamentNow } from "@gamearena/db";
 import { formatTetri } from "@gamearena/shared";
-import { requireAdmin } from "@/lib/auth";
 import { adminOpsErrorResponse } from "@/lib/admin-ops-http";
+import { auditTournamentLabel, withAdminAudit } from "@/lib/with-admin-audit";
 
 /**
  * Admin-only: cancel an event and make every entrant whole.
@@ -20,20 +20,39 @@ import { adminOpsErrorResponse } from "@/lib/admin-ops-http";
  */
 export const dynamic = "force-dynamic";
 
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  await requireAdmin();
-  const { id } = await params;
+export const POST = withAdminAudit<{ id: string }>(
+  { action: "tournament.cancel", targetType: "tournament", targetIdParam: "id" },
+  async ({ params, audit }) => {
+    const { id } = params;
 
-  try {
-    const result = await cancelTournamentNow(id);
-    const message =
-      `Cancelled · ${formatTetri(result.refundedTetri)} refunded across ${result.refundedEntries} entries` +
-      (result.botTetriRecovered > 0
-        ? ` · ${formatTetri(result.botTetriRecovered)} of bot money returned to treasury`
-        : "");
+    // Read BEFORE the cancellation, and this is the route where that ordering
+    // matters most: a cancelled event is the one most likely to be purged later,
+    // and "tournament clx7f2k9m0001 was cancelled" is unreadable a quarter from
+    // now while the name is not.
+    await auditTournamentLabel(audit, id);
 
-    return NextResponse.json({ ok: true, ...result, message });
-  } catch (err) {
-    return adminOpsErrorResponse(err, { fallback: "Could not cancel the tournament" });
+    try {
+      const result = await cancelTournamentNow(id);
+
+      // A cancellation is a mass refund out of escrow, so the row carries what
+      // moved and to whom: the player refunds, how many entries they covered,
+      // and the bot money swept back to treasury rather than left in wallets
+      // nothing settles.
+      audit.meta({
+        refundedTetri: result.refundedTetri,
+        refundedEntries: result.refundedEntries,
+        botTetriRecovered: result.botTetriRecovered,
+      });
+
+      const message =
+        `Cancelled · ${formatTetri(result.refundedTetri)} refunded across ${result.refundedEntries} entries` +
+        (result.botTetriRecovered > 0
+          ? ` · ${formatTetri(result.botTetriRecovered)} of bot money returned to treasury`
+          : "");
+
+      return NextResponse.json({ ok: true, ...result, message });
+    } catch (err) {
+      return adminOpsErrorResponse(err, { fallback: "Could not cancel the tournament" });
+    }
   }
-}
+);

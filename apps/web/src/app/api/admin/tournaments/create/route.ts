@@ -1,7 +1,6 @@
-import { NextRequest } from "next/server";
-import { requireAdmin } from "@/lib/auth";
-import { createLiveTournament } from "@/lib/admin-tournament-create";
+import { auditableTournamentRequest, createLiveTournament } from "@/lib/admin-tournament-create";
 import { readJsonBody } from "@/lib/admin-ops-http";
+import { withAdminAudit } from "@/lib/with-admin-audit";
 
 /**
  * Admin-only: create a REAL knockout tournament — one players can see and enter.
@@ -17,12 +16,27 @@ import { readJsonBody } from "@/lib/admin-ops-http";
  * Its body is unchanged and still accepted — { name, gameKey?, capacity,
  * entryLari, prizesLari, roundDurationS?, readyWindowS? } — with every field
  * except capacity now optional, and tetri accepted alongside lari.
+ *
+ * Logged under its own action rather than the one /create-live uses, because
+ * "which URL created this event" is the only way to tell an integration or a
+ * script apart from an operator working the console.
  */
 export const dynamic = "force-dynamic";
 
-export async function POST(req: NextRequest) {
-  // Before the body is read: requireAdmin redirects rather than returning, so a
-  // non-admin never reaches the creation path at all.
-  await requireAdmin();
-  return createLiveTournament(await readJsonBody(req));
-}
+export const POST = withAdminAudit(
+  // The wrapper runs requireAdmin() before the body is read, so a non-admin
+  // never reaches the creation path at all — the guard this route used to make
+  // its own first statement.
+  { action: "tournament.create", targetType: "tournament" },
+  async ({ req, audit }) => {
+    const body = await readJsonBody(req);
+
+    // Before the creation, so a rejected event — prizes over the pool, an
+    // unknown game — still records what was asked for. This is the whole
+    // specification of a thing that can take real entry money.
+    audit.meta({ requested: auditableTournamentRequest(body) });
+
+    // The id exists only after the create, so the target is filed from inside.
+    return createLiveTournament(body, (created) => audit.target(created.id, created.name));
+  }
+);

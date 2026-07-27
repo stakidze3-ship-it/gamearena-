@@ -34,7 +34,8 @@ import {
  * so the event shows as open and the draw fires when the last seat is taken.
  *
  * AUTHORISATION IS THE CALLER'S JOB. This function does not check who is
- * asking; every route above it must `await requireAdmin()` before calling in.
+ * asking; every route above it must `await requireAdmin()` before calling in —
+ * which withAdminAudit, the wrapper both routes now use, does for them.
  */
 
 /** Ranks must be 1..n, each once — a duplicate or a gap misdirects settlement. */
@@ -83,7 +84,56 @@ export const createLiveTournamentSchema = z.object({
 
 export type CreateLiveTournamentInput = z.input<typeof createLiveTournamentSchema>;
 
-export async function createLiveTournament(body: unknown): Promise<NextResponse> {
+/**
+ * The part of a creation request that is safe to copy onto an audit row.
+ *
+ * The row has to record what was ASKED FOR, not just what was made, because the
+ * interesting rows are the refusals — "prizes total more than the pool" is only
+ * a useful entry if the prizes that were attempted are on it. That means
+ * recording the body before it has been validated.
+ *
+ * Hence the filter. An unvalidated body is whatever the caller sent, and the
+ * audit table must never become a place arbitrary caller-supplied keys land in:
+ * the standing rule on it is that it holds no credentials and no tokens, and
+ * the only way to keep that promise about a body nobody has checked yet is to
+ * copy across the fields this endpoint actually understands and drop the rest.
+ *
+ * Read off the schema rather than listed by hand, so a new field cannot be
+ * added above and silently go unlogged.
+ */
+const AUDITABLE_KEYS = Object.keys(createLiveTournamentSchema.shape);
+
+export function auditableTournamentRequest(body: unknown): Record<string, unknown> {
+  if (typeof body !== "object" || body === null) return {};
+  const source = body as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of AUDITABLE_KEYS) {
+    // Absent stays absent: a row full of nulls for every optional field the
+    // operator did not set reads as though they set them all to nothing.
+    if (source[key] !== undefined) out[key] = source[key];
+  }
+  return out;
+}
+
+/**
+ * Told about the event the moment it exists, before the response is built.
+ *
+ * Only the audit trail uses this. The id a row has to be filed against does not
+ * exist until the create() below returns, and it is buried inside a serialised
+ * response by the time the route sees one — so rather than have both routes
+ * clone and re-parse their own reply to find out what they made, the fact is
+ * handed to them directly and type-checked.
+ *
+ * Called for its side effect only, on the success path only. It must not throw:
+ * an event that was created and then failed to be announced would still be a
+ * live, joinable tournament the caller was told nothing about.
+ */
+export type TournamentCreatedHook = (created: { id: string; name: string }) => void;
+
+export async function createLiveTournament(
+  body: unknown,
+  onCreated?: TournamentCreatedHook
+): Promise<NextResponse> {
   const parsed = createLiveTournamentSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
@@ -166,6 +216,8 @@ export async function createLiveTournament(body: unknown): Promise<NextResponse>
     },
     select: { id: true, name: true, capacity: true, entryTetri: true },
   });
+
+  onCreated?.({ id: t.id, name: t.name });
 
   return NextResponse.json({
     ok: true,

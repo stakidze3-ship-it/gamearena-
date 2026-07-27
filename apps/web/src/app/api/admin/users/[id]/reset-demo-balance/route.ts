@@ -1,8 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { prisma, resetDemoBalance } from "@gamearena/db";
 import { formatTetri } from "@gamearena/shared";
 import { adminOpsErrorResponse } from "@/lib/admin-ops-http";
-import { requireAdmin } from "@/lib/auth";
+import { withAdminAudit } from "@/lib/with-admin-audit";
 
 /**
  * Admin-only: put a player's demo cash back to the signup grant, exactly.
@@ -30,41 +30,56 @@ import { requireAdmin } from "@/lib/auth";
  */
 export const dynamic = "force-dynamic";
 
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  await requireAdmin();
-  const { id } = await params;
+export const POST = withAdminAudit<{ id: string }>(
+  { action: "user.balance.reset-demo", targetType: "user", targetIdParam: "id" },
+  async ({ params, audit }) => {
+    const { id } = params;
 
-  const target = await prisma.user.findUnique({
-    where: { id },
-    select: { username: true, isBot: true },
-  });
-  if (!target) {
-    return NextResponse.json({ error: "No account with that id" }, { status: 404 });
-  }
-  if (target.isBot) {
-    // A bot is funded from treasury when it is seated and swept back when the
-    // event ends. Resetting one to the signup grant would leave minted money
-    // sitting in a wallet that nothing ever settles.
-    return NextResponse.json(
-      { error: `${target.username} is a bot — bot funding is handled by the tournament sweep.` },
-      { status: 400 }
-    );
-  }
-
-  try {
-    const result = await resetDemoBalance(id);
-    return NextResponse.json({
-      ok: true,
-      username: target.username,
-      ...result,
-      message: result.changed
-        ? `${target.username} reset from ${formatTetri(result.balanceBeforeTetri)} to ${formatTetri(result.balanceAfterTetri)}.`
-        : `${target.username} was already holding exactly ${formatTetri(result.targetTetri)} — nothing to do.`,
+    const target = await prisma.user.findUnique({
+      where: { id },
+      select: { username: true, isBot: true },
     });
-  } catch (err) {
-    // A reset moves money, so the ledger's own guards can still refuse it.
-    // Classified by the shared mapper so a refusal and a genuine fault do not
-    // arrive at the console looking the same.
-    return adminOpsErrorResponse(err, { fallback: "Reset failed." });
+    if (!target) {
+      return NextResponse.json({ error: "No account with that id" }, { status: 404 });
+    }
+    audit.label(target.username);
+
+    if (target.isBot) {
+      // A bot is funded from treasury when it is seated and swept back when the
+      // event ends. Resetting one to the signup grant would leave minted money
+      // sitting in a wallet that nothing ever settles.
+      return NextResponse.json(
+        { error: `${target.username} is a bot — bot funding is handled by the tournament sweep.` },
+        { status: 400 }
+      );
+    }
+
+    try {
+      const result = await resetDemoBalance(id);
+
+      // There is no operator-chosen amount on this route — the movement is
+      // whatever the gap to the signup grant happened to be — so without the
+      // before, after and target the row cannot say how much money this moved.
+      audit.meta({
+        balanceBeforeTetri: result.balanceBeforeTetri,
+        balanceAfterTetri: result.balanceAfterTetri,
+        targetTetri: result.targetTetri,
+        changed: result.changed,
+      });
+
+      return NextResponse.json({
+        ok: true,
+        username: target.username,
+        ...result,
+        message: result.changed
+          ? `${target.username} reset from ${formatTetri(result.balanceBeforeTetri)} to ${formatTetri(result.balanceAfterTetri)}.`
+          : `${target.username} was already holding exactly ${formatTetri(result.targetTetri)} — nothing to do.`,
+      });
+    } catch (err) {
+      // A reset moves money, so the ledger's own guards can still refuse it.
+      // Classified by the shared mapper so a refusal and a genuine fault do not
+      // arrive at the console looking the same.
+      return adminOpsErrorResponse(err, { fallback: "Reset failed." });
+    }
   }
-}
+);

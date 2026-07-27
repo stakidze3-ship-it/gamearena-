@@ -1,8 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma, setAccountFrozen } from "@gamearena/db";
 import { accountStateErrorResponse } from "@/lib/admin-account-state";
-import { requireAdmin } from "@/lib/auth";
+import { withAdminAudit } from "@/lib/with-admin-audit";
 
 /**
  * Admin-only: freeze or unfreeze an account.
@@ -34,44 +34,59 @@ const bodySchema = z.object({
   frozen: z.boolean(),
 });
 
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const admin = await requireAdmin();
-  const { id } = await params;
+export const POST = withAdminAudit<{ id: string }>(
+  // The default action covers the body this route cannot see yet. Freezing and
+  // unfreezing are renamed apart below, because the console filters on the
+  // action prefix and "show me every freeze" must not also return every thaw.
+  { action: "user.freeze", targetType: "user", targetIdParam: "id" },
+  async ({ req, admin, params, audit }) => {
+    const { id } = params;
 
-  const parsed = bodySchema.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) {
-    return NextResponse.json({ error: "Expected { frozen: true | false }" }, { status: 400 });
-  }
-  const { frozen } = parsed.data;
+    const parsed = bodySchema.safeParse(await req.json().catch(() => null));
+    if (!parsed.success) {
+      return NextResponse.json({ error: "Expected { frozen: true | false }" }, { status: 400 });
+    }
+    const { frozen } = parsed.data;
 
-  if (frozen && id === admin.id) {
-    return NextResponse.json(
-      { error: "You cannot freeze your own account — it would sign you out of the console." },
-      { status: 400 }
-    );
-  }
+    audit.action(frozen ? "user.freeze" : "user.unfreeze");
 
-  // Checked up front so an unknown id is a plain 404 with a plain message,
-  // rather than a thrown error classified back into one by matching its text.
-  const target = await prisma.user.findUnique({ where: { id }, select: { username: true } });
-  if (!target) {
-    return NextResponse.json({ error: "No account with that id" }, { status: 404 });
-  }
+    if (frozen && id === admin.id) {
+      return NextResponse.json(
+        { error: "You cannot freeze your own account — it would sign you out of the console." },
+        { status: 400 }
+      );
+    }
 
-  try {
-    const result = await setAccountFrozen(id, frozen);
-    return NextResponse.json({
-      ok: true,
-      ...result,
-      status: result.frozen ? "BANNED" : "ACTIVE",
-      // Stated in the response, not just in this comment: whoever reads it must
-      // know the two controls share one column.
-      banEqualsFreeze: true,
-      message: frozen
-        ? `${result.username} is frozen — signed out and blocked from every screen that needs a session. This is the same state as a ban.`
-        : `${result.username} can sign in again.`,
-    });
-  } catch (err) {
-    return accountStateErrorResponse(err);
+    // Checked up front so an unknown id is a plain 404 with a plain message,
+    // rather than a thrown error classified back into one by matching its text.
+    const target = await prisma.user.findUnique({ where: { id }, select: { username: true } });
+    if (!target) {
+      return NextResponse.json({ error: "No account with that id" }, { status: 404 });
+    }
+    audit.label(target.username);
+
+    try {
+      const result = await setAccountFrozen(id, frozen);
+
+      // Recorded even though the action name already says it: the row is read
+      // alongside ../ban, which writes the same column, and an operator
+      // reconstructing an account's access history should not have to know that
+      // to read it.
+      audit.meta({ frozen: result.frozen, banEqualsFreeze: true });
+
+      return NextResponse.json({
+        ok: true,
+        ...result,
+        status: result.frozen ? "BANNED" : "ACTIVE",
+        // Stated in the response, not just in this comment: whoever reads it
+        // must know the two controls share one column.
+        banEqualsFreeze: true,
+        message: frozen
+          ? `${result.username} is frozen — signed out and blocked from every screen that needs a session. This is the same state as a ban.`
+          : `${result.username} can sign in again.`,
+      });
+    } catch (err) {
+      return accountStateErrorResponse(err);
+    }
   }
-}
+);

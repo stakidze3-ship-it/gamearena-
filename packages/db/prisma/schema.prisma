@@ -66,6 +66,7 @@ model User {
   challengesOut     Challenge[]         @relation("ChallengeOut")
   challengesIn      Challenge[]         @relation("ChallengeIn")
   wonMatches        Match[]             @relation("MatchWinner")
+  adminAuditLogs    AdminAuditLog[]
 }
 
 // ─────────────────────────── Money: double-entry ledger ───────────────────────────
@@ -624,4 +625,38 @@ model FeatureFlag {
   enabled   Boolean
   value     Json?
   updatedAt DateTime @updatedAt
+}
+
+/// Every privileged action an operator takes.
+///
+/// Append-only by construction and never written by ordinary gameplay. An admin
+/// console that can move money, suspend accounts and decide match results is
+/// only trustworthy if each of those leaves a row saying who did it, to whom,
+/// when, and why — so this records the failures too, not just the successes.
+model AdminAuditLog {
+  id            String   @id @default(cuid())
+  createdAt     DateTime @default(now())
+  adminUserId   String
+  admin         User     @relation(fields: [adminUserId], references: [id])
+  /// Denormalised on purpose: an admin account may later be renamed, and the
+  /// log has to still read true about who acted at the time.
+  adminUsername String
+  /// Dotted verb, e.g. "user.balance.adjust", "tournament.fill-bots".
+  action        String
+  targetType    String?
+  targetId      String?
+  /// Denormalised label so a log entry is readable without joining to a row
+  /// that may since have been renamed or removed.
+  targetLabel   String?
+  reason        String?
+  metadata      Json?
+  ip            String?
+  /// "ok" | "error". A refused or failed action is exactly what an
+  /// investigation looks for, so it is recorded rather than dropped.
+  outcome       String   @default("ok")
+  errorMessage  String?
+
+  @@index([createdAt(sort: Desc)])
+  @@index([adminUserId, createdAt])
+  @@index([targetType, targetId])
 }

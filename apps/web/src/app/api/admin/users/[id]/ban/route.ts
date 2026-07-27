@@ -1,8 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma, setAccountFrozen } from "@gamearena/db";
 import { accountStateErrorResponse } from "@/lib/admin-account-state";
-import { requireAdmin } from "@/lib/auth";
+import { withAdminAudit } from "@/lib/with-admin-audit";
 
 /**
  * Admin-only: ban or unban an account.
@@ -44,42 +44,58 @@ const bodySchema = z.object({
   banned: z.boolean(),
 });
 
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const admin = await requireAdmin();
-  const { id } = await params;
+export const POST = withAdminAudit<{ id: string }>(
+  // Renamed to user.unban below when the body says so. The two names exist even
+  // though one column backs both, because "who was banned last week" and "who
+  // quietly lifted it" are different questions and a single name answers
+  // neither.
+  { action: "user.ban", targetType: "user", targetIdParam: "id" },
+  async ({ req, admin, params, audit }) => {
+    const { id } = params;
 
-  const parsed = bodySchema.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) {
-    return NextResponse.json({ error: "Expected { banned: true | false }" }, { status: 400 });
-  }
-  const { banned } = parsed.data;
+    const parsed = bodySchema.safeParse(await req.json().catch(() => null));
+    if (!parsed.success) {
+      return NextResponse.json({ error: "Expected { banned: true | false }" }, { status: 400 });
+    }
+    const { banned } = parsed.data;
 
-  if (banned && id === admin.id) {
-    return NextResponse.json(
-      { error: "You cannot ban your own account — it would sign you out of the console." },
-      { status: 400 }
-    );
-  }
+    audit.action(banned ? "user.ban" : "user.unban");
 
-  const target = await prisma.user.findUnique({ where: { id }, select: { username: true } });
-  if (!target) {
-    return NextResponse.json({ error: "No account with that id" }, { status: 404 });
-  }
+    if (banned && id === admin.id) {
+      return NextResponse.json(
+        { error: "You cannot ban your own account — it would sign you out of the console." },
+        { status: 400 }
+      );
+    }
 
-  try {
-    const result = await setAccountFrozen(id, banned);
-    return NextResponse.json({
-      ok: true,
-      ...result,
-      banned,
-      status: banned ? "BANNED" : "ACTIVE",
-      /** True, and stated in every response: ban and freeze are one column. */
-      banEqualsFreeze: true,
-      message: banned
-        ? `${result.username} is banned — signed out and blocked from every screen that needs a session. This is the same state as a freeze; their balance and any open entries are untouched.`
-        : `${result.username} can sign in again — this also clears a freeze, because they are the same state.`,
-    });
-  } catch (err) {
-    return accountStateErrorResponse(err);
+    const target = await prisma.user.findUnique({ where: { id }, select: { username: true } });
+    if (!target) {
+      return NextResponse.json({ error: "No account with that id" }, { status: 404 });
+    }
+    audit.label(target.username);
+
+    try {
+      const result = await setAccountFrozen(id, banned);
+
+      // banEqualsFreeze is carried into the row for the same reason it is
+      // carried into the response: an access history that shows a ban here and
+      // an unfreeze from ../freeze is one history, not two, and the row has to
+      // say so without anyone having to read this file.
+      audit.meta({ banned: result.frozen, banEqualsFreeze: true });
+
+      return NextResponse.json({
+        ok: true,
+        ...result,
+        banned,
+        status: banned ? "BANNED" : "ACTIVE",
+        /** True, and stated in every response: ban and freeze are one column. */
+        banEqualsFreeze: true,
+        message: banned
+          ? `${result.username} is banned — signed out and blocked from every screen that needs a session. This is the same state as a freeze; their balance and any open entries are untouched.`
+          : `${result.username} can sign in again — this also clears a freeze, because they are the same state.`,
+      });
+    } catch (err) {
+      return accountStateErrorResponse(err);
+    }
   }
-}
+);
