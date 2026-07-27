@@ -1,0 +1,16 @@
+{
+  // The tools are real code that calls into packages/db, and until now no
+  // tsconfig included them — so `npm run typecheck` compiled none of the eight
+  // scripts that call fillTournamentWithBots. Its signature changed in this
+  // series and nothing would have caught a broken call site.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "target": "es2022",
+    "lib": ["es2023", "dom"],
+    "types": ["node"]
+  },
+  "include": ["**/*.ts"]
+}
