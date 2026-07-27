@@ -2,29 +2,44 @@
 
 import { useState } from "react";
 import { cn } from "@/lib/cn";
+import { DashboardSection } from "./sections/dashboard-section";
 import { TournamentsSection, type AdminTournamentRow } from "./sections/tournaments-section";
 import { UsersSection } from "./sections/users-section";
 import { MatchesSection } from "./sections/matches-section";
+import { WalletSection } from "./sections/wallet-section";
 import { SystemSection } from "./sections/system-section";
+import { AuditSection } from "./sections/audit-section";
 
 /**
  * The admin console.
  *
- * One page, four sections, no separation between "testing" and "administration"
- * — that split was the problem it replaced. An operator filling a bracket with
- * bots and an operator refunding a player are the same person doing the same
- * job, and making them navigate different areas of the product to do it meant
- * the testing tools got treated as a toy while the real tools stayed hidden.
+ * One page, one set of sections, no separation between "testing" and
+ * "administration" — that split was the problem it replaced. An operator
+ * filling a bracket with bots and an operator refunding a player are the same
+ * person doing the same job, and making them navigate different areas of the
+ * product to do it meant the testing tools got treated as a toy while the real
+ * tools stayed hidden.
  *
  * Sections are client-side tabs rather than routes. Switching between them
  * during an incident should not cost a page load, and the tournament list is
  * already loaded by the server component above.
+ *
+ * Dashboard is first, and is the tab the console opens on, because the first
+ * question is always "is anything wrong" and it is the only section that
+ * answers it without the operator having to know where to look. Every other
+ * tab acts on something; this one only reads.
  */
 const SECTIONS = [
+  { key: "dashboard", label: "Dashboard" },
   { key: "tournaments", label: "Tournaments" },
   { key: "users", label: "Users" },
   { key: "matches", label: "Matches" },
+  { key: "wallet", label: "Wallet" },
   { key: "system", label: "System" },
+  // Last, because it is the only tab read after the fact rather than during.
+  // Every section before it acts on the platform; this one reports on what the
+  // others did, which is also why it is the one tab that writes nothing itself.
+  { key: "audit", label: "Audit" },
 ] as const;
 
 type SectionKey = (typeof SECTIONS)[number]["key"];
@@ -36,7 +51,7 @@ export function AdminConsole({
   tournaments: AdminTournamentRow[];
   operator: string;
 }) {
-  const [section, setSection] = useState<SectionKey>("tournaments");
+  const [section, setSection] = useState<SectionKey>("dashboard");
 
   const liveRunning = tournaments.filter((t) => t.status === "RUNNING" && !t.isTest).length;
 
@@ -80,10 +95,13 @@ export function AdminConsole({
         </div>
       </nav>
 
+      {section === "dashboard" && <DashboardSection />}
       {section === "tournaments" && <TournamentsSection rows={tournaments} />}
       {section === "users" && <UsersSection />}
       {section === "matches" && <MatchesSection />}
+      {section === "wallet" && <WalletSection />}
       {section === "system" && <SystemSection />}
+      {section === "audit" && <AuditSection />}
     </div>
   );
 }

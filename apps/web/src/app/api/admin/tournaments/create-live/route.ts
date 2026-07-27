@@ -1,7 +1,6 @@
-import { NextRequest } from "next/server";
-import { requireAdmin } from "@/lib/auth";
-import { createLiveTournament } from "@/lib/admin-tournament-create";
+import { auditableTournamentRequest, createLiveTournament } from "@/lib/admin-tournament-create";
 import { readJsonBody } from "@/lib/admin-ops-http";
+import { withAdminAudit } from "@/lib/with-admin-audit";
 
 /**
  * Admin-only: create a REAL knockout tournament — one players can see and enter.
@@ -20,9 +19,20 @@ import { readJsonBody } from "@/lib/admin-ops-http";
  */
 export const dynamic = "force-dynamic";
 
-export async function POST(req: NextRequest) {
-  // First, before the body is even read: requireAdmin redirects rather than
-  // returning, so a non-admin never reaches the creation path at all.
-  await requireAdmin();
-  return createLiveTournament(await readJsonBody(req));
-}
+export const POST = withAdminAudit(
+  // A separate action from /create even though the implementation is shared:
+  // this is the URL the console uses, and an event created here was created by
+  // a person looking at a confirmation dialog rather than by a script.
+  { action: "tournament.create-live", targetType: "tournament" },
+  async ({ req, audit }) => {
+    const body = await readJsonBody(req);
+
+    // Recorded before creation. A live event can take real money from real
+    // players, so what was requested has to survive the request being refused —
+    // "prizes total more than the pool" is a refusal worth being able to find.
+    audit.meta({ requested: auditableTournamentRequest(body), live: true });
+
+    // The id exists only after the create, so the target is filed from inside.
+    return createLiveTournament(body, (created) => audit.target(created.id, created.name));
+  }
+);

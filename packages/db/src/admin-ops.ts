@@ -25,6 +25,7 @@ import {
   AWAITING_PLAYERS_AT,
   KNOCKOUT_CONFIG,
   SIGNUP_CREDIT_TETRI,
+  formatTetri,
   lariToTetri,
 } from "@gamearena/shared";
 import { prisma } from "./client";
@@ -33,6 +34,7 @@ import {
   getBalanceTetri,
   postTransaction,
   postTransactionIn,
+  type PostEntry,
 } from "./ledger";
 import {
   THIRD_PLACE_SLOT,
@@ -1243,6 +1245,666 @@ export async function resetDemoBalance(userId: string): Promise<ResetDemoBalance
     targetTetri: SIGNUP_CREDIT_TETRI,
     changed: true,
   };
+}
+
+// ─────────────────────── Bulk balance operations ───────────────────────
+
+/*
+ * Everything below this line can move money in more than one wallet from a
+ * single button press, which makes it the most dangerous code in the console.
+ * Four rules hold it together, and every function here obeys all four.
+ *
+ *   1. ONE database transaction per sweep. The operator asked for
+ *      all-or-nothing — either every account in the set moves or none does —
+ *      and a partially-applied sweep is the one outcome nobody can reason about
+ *      afterwards, because there is no record of where it stopped.
+ *   2. ONE balanced ledger transaction per sweep, not one per account. Both
+ *      choices are auditable, but the sweep genuinely IS one operation, and
+ *      posting it as one halves the statement count — which halves how long the
+ *      whole platform's money is frozen (see BULK_BALANCE_MAX_ACCOUNTS).
+ *   3. Over the cap, REFUSE. Never process a prefix of the set. Silently
+ *      truncating would report success over a fraction of the accounts the
+ *      operator was looking at when they pressed the button.
+ *   4. The preview and the sweep select accounts through the SAME predicate.
+ *      A confirmation dialog quoting numbers that a differently-filtered sweep
+ *      then contradicts is worse than no preview at all.
+ */
+
+/**
+ * How many accounts one sweep may write before it refuses outright.
+ *
+ * The binding constraint is NOT the transaction timeout — it is SYS_TREASURY.
+ * Treasury is the counterparty to every credit and debit on the platform, and a
+ * sweep increments it. For as long as that one interactive transaction is open
+ * it holds a row lock on treasury, so NOTHING else can move money: no signup
+ * grant, no match settlement, no tournament payout, no bot funding. A sweep is
+ * therefore a deliberate, brief, platform-wide freeze of the economy, and this
+ * number is how long "brief" is allowed to be.
+ *
+ * At roughly three statements per account (resolve the account, increment the
+ * cached balance, insert the entry) 500 accounts is a few seconds of frozen
+ * ledger. That is survivable during a maintenance window and roughly the point
+ * past which the right tool stops being a console button and starts being a
+ * migration run with the platform in maintenance mode.
+ *
+ * Past the cap the operation THROWS rather than processing the first 500 — see
+ * rule 3 above. previewResetAllUsers reports `overCap` so the console can say
+ * so before the operator commits, rather than discovering it in an error.
+ */
+export const BULK_BALANCE_MAX_ACCOUNTS = 500;
+
+/**
+ * Interactive-transaction budget for a sweep.
+ *
+ * Generous against the few seconds a capped sweep actually needs, because the
+ * failure mode of being too tight is the worst one available here: a timeout
+ * mid-sweep rolls the whole thing back, and an operator who sees "reset failed"
+ * on a sweep that was working correctly will press it again.
+ */
+const BULK_TX_TIMEOUT_MS = 60_000;
+
+/** Chunk size for reading balances back by user id, to keep `IN (…)` sane. */
+const BALANCE_READ_CHUNK = 1_000;
+
+/** One account's part of a sweep: where it is now and how far it has to move. */
+interface PlannedDelta {
+  userId: string;
+  username: string;
+  balanceBeforeTetri: number;
+  /** Signed; never zero — accounts already at their target are not planned. */
+  deltaTetri: number;
+}
+
+/**
+ * Cash balances for a set of users, as a lookup.
+ *
+ * Read in chunks because a preview can legitimately span the whole user base
+ * and a single `IN` list of tens of thousands of ids is how you find out your
+ * database has a parameter limit. Ids with no USER_CASH account simply do not
+ * appear: that account is created lazily on a user's first ledger posting, so
+ * its absence means the account has genuinely never held money — zero, not
+ * missing.
+ */
+async function cashBalancesFor(userIds: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  for (let i = 0; i < userIds.length; i += BALANCE_READ_CHUNK) {
+    const slice = userIds.slice(i, i + BALANCE_READ_CHUNK);
+    const accounts = await prisma.account.findMany({
+      where: { type: "USER_CASH", userId: { in: slice } },
+      select: { userId: true, balanceTetri: true },
+    });
+    for (const account of accounts) {
+      if (account.userId) out.set(account.userId, account.balanceTetri);
+    }
+  }
+  return out;
+}
+
+/**
+ * Turn a plan into the entries of ONE balanced ledger transaction.
+ *
+ * Treasury goes FIRST, deliberately. postTransactionIn updates accounts in the
+ * order it is given them, and treasury is the row every other money operation
+ * on the platform also wants. Taking the most-contended lock first means a
+ * concurrent settlement blocks on treasury immediately and waits; taking it
+ * last would mean the sweep sits holding hundreds of player rows while waiting
+ * for treasury, which a signup grant is holding while it waits for one of those
+ * player rows — a deadlock, resolved by Postgres killing one of them at random.
+ * The player entries are then ordered by id so two sweeps take their locks in
+ * the same sequence for the same reason.
+ *
+ * The treasury entry is omitted when the net is exactly zero — when credits and
+ * debits cancel out, treasury's position genuinely does not change, and the
+ * ledger rejects zero-amount entries because they are noise rather than money.
+ * The entries still sum to zero without it, which is the invariant that matters.
+ */
+function sweepEntries(plan: PlannedDelta[]): PostEntry[] {
+  const netTetri = plan.reduce((sum, row) => sum + row.deltaTetri, 0);
+  const entries: PostEntry[] = [];
+  if (netTetri !== 0) {
+    entries.push({ accountKey: AccountKeys.treasury(), amountTetri: -netTetri });
+  }
+  for (const row of [...plan].sort((a, b) => (a.userId < b.userId ? -1 : 1))) {
+    entries.push({ accountKey: AccountKeys.userCash(row.userId), amountTetri: row.deltaTetri });
+  }
+  return entries;
+}
+
+/** Aggregate figures every sweep reports, computed one way so they agree. */
+function summarise(plan: PlannedDelta[]) {
+  let netTetri = 0;
+  let grossTetri = 0;
+  let creditedCount = 0;
+  let debitedCount = 0;
+  for (const row of plan) {
+    netTetri += row.deltaTetri;
+    grossTetri += Math.abs(row.deltaTetri);
+    if (row.deltaTetri > 0) creditedCount++;
+    else debitedCount++;
+  }
+  return { netTetri, grossTetri, creditedCount, debitedCount };
+}
+
+export interface SetExactBalanceResult {
+  userId: string;
+  username: string;
+  balanceBeforeTetri: number;
+  balanceAfterTetri: number;
+  targetTetri: number;
+  /** Signed movement that was posted. Zero when the balance was already right. */
+  deltaTetri: number;
+  /** False when the account was already sitting on the target. */
+  changed: boolean;
+  /** True when this reference had already been used — nothing moved twice. */
+  alreadyApplied: boolean;
+  /**
+   * Whether the balance actually ends up on the target.
+   *
+   * Normally true, and false in exactly one case worth reporting rather than
+   * hiding: a reused reference. The posting is then skipped by the idempotency
+   * key while the balance has moved on since the first call, so the account
+   * finishes somewhere other than the number the operator typed. Saying
+   * "set to ₾10" when it is not ₾10 is how an operator stops trusting the tool.
+   */
+  reachedTarget: boolean;
+}
+
+/**
+ * Put one player's cash balance on an exact number.
+ *
+ * The difference between this and adminAdjustBalance is what the operator has
+ * in their head. "Credit ₾5" is an adjustment; "this account should be showing
+ * ₾20" is a target, and making the operator do the subtraction themselves — off
+ * a balance that may have changed since the page rendered — is how the wrong
+ * amount gets typed. So the subtraction happens here, against a balance read at
+ * the moment of the write.
+ *
+ * It MOVES THE DIFFERENCE through the ledger. It does not write a balance, and
+ * there is deliberately no code path here that could: the whole wallet is
+ * auditable only because every tetri in it arrived from somewhere, and an admin
+ * tool that set a number directly would break that for every account it ever
+ * touched.
+ *
+ * Bounds, and why they are asymmetric:
+ *
+ *   · The target must be non-negative. USER_CASH cannot go below zero — the
+ *     ledger would refuse mid-transaction with an engine-flavoured message —
+ *     so this refuses first, in words an operator can act on.
+ *   · The target is capped at ADMIN_ADJUSTMENT_MAX_TETRI, reusing the single
+ *     hand-adjustment ceiling rather than inventing a second, different limit
+ *     that would eventually disagree with it. Because the target is bounded and
+ *     the balance floor is zero, an UPWARD movement is automatically bounded by
+ *     the same ceiling.
+ *   · A DOWNWARD movement is deliberately not capped. Zeroing an account that
+ *     is holding ₾8,000 of tournament prizes is exactly the incident this tool
+ *     exists for, and a cap that blocked it would send the operator to a
+ *     database console — which is the one place they must never go for money.
+ */
+export async function setExactBalance(
+  userId: string,
+  targetTetri: number,
+  reason: string,
+  adminUsername: string,
+  reference: string
+): Promise<SetExactBalanceResult> {
+  if (!Number.isSafeInteger(targetTetri)) {
+    throw new Error("Target must be a whole number of tetri.");
+  }
+  if (targetTetri < 0) {
+    throw new Error("Target must not be negative — a cash balance cannot go below zero.");
+  }
+  if (targetTetri > ADMIN_ADJUSTMENT_MAX_TETRI) {
+    throw new Error(
+      `Balances are capped at ${formatTetri(ADMIN_ADJUSTMENT_MAX_TETRI)} per hand-set target.`
+    );
+  }
+  if (!reason.trim()) {
+    throw new Error("A reason is required — it is written into the ledger.");
+  }
+  if (!reference.trim()) {
+    throw new Error("A reference is required so a repeated click cannot pay twice.");
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, username: true },
+  });
+  if (!user) throw new Error("No such account");
+
+  const cashKey = AccountKeys.userCash(userId);
+  const balanceBeforeTetri = await getBalanceTetri(prisma, cashKey);
+  const deltaTetri = targetTetri - balanceBeforeTetri;
+
+  if (deltaTetri === 0) {
+    return {
+      userId: user.id,
+      username: user.username,
+      balanceBeforeTetri,
+      balanceAfterTetri: balanceBeforeTetri,
+      targetTetri,
+      deltaTetri: 0,
+      changed: false,
+      alreadyApplied: false,
+      reachedTarget: true,
+    };
+  }
+
+  // ADMIN_ADJUSTMENT, not ADJUSTMENT: an operator choosing a number by hand is
+  // a discretionary movement, and burying it among machinery like bot funding
+  // and demo resets would hide the entries an auditor is looking for.
+  const { alreadyPosted } = await postTransaction({
+    kind: "ADMIN_ADJUSTMENT",
+    memo: `Balance set to ${formatTetri(targetTetri)} — ${reason} — issued by ${adminUsername}`,
+    refType: "user",
+    refId: userId,
+    idempotencyKey: `admin-set-balance:${userId}:${reference}`,
+    entries: [
+      { accountKey: AccountKeys.treasury(), amountTetri: -deltaTetri },
+      { accountKey: cashKey, amountTetri: deltaTetri },
+    ],
+  });
+
+  const balanceAfterTetri = await getBalanceTetri(prisma, cashKey);
+  return {
+    userId: user.id,
+    username: user.username,
+    balanceBeforeTetri,
+    balanceAfterTetri,
+    targetTetri,
+    deltaTetri,
+    changed: !alreadyPosted,
+    alreadyApplied: alreadyPosted === true,
+    reachedTarget: balanceAfterTetri === targetTetri,
+  };
+}
+
+export interface BulkAdjustBalanceInput {
+  userIds: string[];
+  /** Signed tetri applied to EVERY listed account. Positive credits. */
+  amountTetri: number;
+  reason: string;
+  adminUsername: string;
+  /** One reference for the whole batch — re-sending it is a no-op, not a repeat. */
+  reference: string;
+}
+
+export interface BulkAdjustBalanceRow {
+  userId: string;
+  username: string;
+  balanceBeforeTetri: number;
+  balanceAfterTetri: number;
+}
+
+export interface BulkAdjustBalanceResult {
+  amountTetri: number;
+  affectedCount: number;
+  /** Signed total that left treasury. Positive means players gained overall. */
+  netTetri: number;
+  /** Sum of the absolute movements — the volume, regardless of direction. */
+  grossTetri: number;
+  rows: BulkAdjustBalanceRow[];
+  maxAccounts: number;
+  alreadyApplied: boolean;
+}
+
+/**
+ * Apply the SAME signed adjustment to a hand-picked list of accounts.
+ *
+ * The compensation tool: an event was cancelled, a bug cost forty people their
+ * entry fee, and paying them back one at a time is both slow and a guarantee
+ * that two of them get missed. So the list is explicit — never a filter, never
+ * "everyone who…" — because a query that selects the wrong rows pays the wrong
+ * people, and by then the money has moved.
+ *
+ * All-or-nothing, in one database transaction and one balanced ledger posting.
+ * A batch that paid thirty of forty people and then failed would leave the
+ * operator guessing which thirty, and the natural response — press it again —
+ * would pay those thirty twice.
+ *
+ * ONE idempotency key covers the whole batch, so a double-click is a no-op
+ * rather than a second payment to everyone. Two genuine batches need two
+ * references, exactly as adminAdjustBalance requires for a single account.
+ *
+ * Bots are refused BY NAME rather than skipped. A bot is funded from treasury
+ * when it is seated and swept back when its event ends, so money parked in a
+ * bot wallet is money nothing will ever settle — but quietly dropping bots from
+ * the batch would report "40 accounts credited" over 37, and the operator would
+ * never learn that three people are still waiting.
+ */
+export async function bulkAdjustBalance(
+  input: BulkAdjustBalanceInput
+): Promise<BulkAdjustBalanceResult> {
+  const { amountTetri, reason, adminUsername, reference } = input;
+
+  if (!Number.isSafeInteger(amountTetri)) {
+    throw new Error("Amount must be a whole number of tetri.");
+  }
+  if (amountTetri === 0) {
+    throw new Error("Amount must not be zero — there is nothing to adjust.");
+  }
+  if (Math.abs(amountTetri) > ADMIN_ADJUSTMENT_MAX_TETRI) {
+    throw new Error(
+      `Adjustments are capped at ${formatTetri(ADMIN_ADJUSTMENT_MAX_TETRI)} per account.`
+    );
+  }
+  if (!reason.trim()) {
+    throw new Error("A reason is required — it is written into the ledger.");
+  }
+  if (!reference.trim()) {
+    throw new Error("A reference is required so a repeated click cannot pay twice.");
+  }
+
+  // Deduplicated before anything is counted. A list pasted from a spreadsheet
+  // routinely contains the same id twice, and the shared idempotency key means
+  // the second copy would post nothing anyway — but it would still inflate
+  // "accounts affected", and a count that overstates who was paid is exactly
+  // the number somebody reconciles against later.
+  const userIds = [...new Set(input.userIds)];
+  if (userIds.length === 0) {
+    throw new Error("Select at least one account.");
+  }
+  if (userIds.length > BULK_BALANCE_MAX_ACCOUNTS) {
+    throw new Error(
+      `A batch is capped at ${BULK_BALANCE_MAX_ACCOUNTS} accounts; ${userIds.length} were selected. Split it — the whole batch runs in one transaction that locks the platform's treasury while it is open.`
+    );
+  }
+
+  const users = await prisma.user.findMany({
+    where: { id: { in: userIds } },
+    select: { id: true, username: true, isBot: true },
+  });
+
+  // Every refusal below names the accounts, because "some ids were invalid" is
+  // an error an operator cannot act on with a list of forty ids in front of them.
+  if (users.length !== userIds.length) {
+    const found = new Set(users.map((u) => u.id));
+    const missing = userIds.filter((id) => !found.has(id));
+    throw new Error(
+      `${missing.length} of the selected ids are not accounts: ${missing.slice(0, 5).join(", ")}${missing.length > 5 ? "…" : ""}`
+    );
+  }
+  const bots = users.filter((u) => u.isBot);
+  if (bots.length > 0) {
+    throw new Error(
+      `The selection contains ${bots.length} bot ${bots.length === 1 ? "account" : "accounts"} (${bots.slice(0, 5).map((b) => b.username).join(", ")}${bots.length > 5 ? "…" : ""}) — bot balances are managed by the tournament funding sweep. Deselect them and run it again.`
+    );
+  }
+
+  const balances = await cashBalancesFor(userIds);
+
+  // Overdrafts are caught HERE, before the transaction opens, so the message
+  // names the accounts that cannot afford it. The ledger's own floor would also
+  // stop this, but it fires mid-sweep with an engine-flavoured message about
+  // one account key, having already rolled back the other 39.
+  if (amountTetri < 0) {
+    const short = users.filter((u) => (balances.get(u.id) ?? 0) + amountTetri < 0);
+    if (short.length > 0) {
+      throw new Error(
+        `${short.length} of the selected accounts would be taken below zero (${short.slice(0, 5).map((u) => `${u.username} holds ${formatTetri(balances.get(u.id) ?? 0)}`).join("; ")}${short.length > 5 ? "…" : ""}). Nothing was moved.`
+      );
+    }
+  }
+
+  const plan: PlannedDelta[] = users.map((user) => ({
+    userId: user.id,
+    username: user.username,
+    balanceBeforeTetri: balances.get(user.id) ?? 0,
+    deltaTetri: amountTetri,
+  }));
+
+  const { alreadyPosted } = await prisma.$transaction(
+    async (db) =>
+      postTransactionIn(db, {
+        kind: "ADMIN_ADJUSTMENT",
+        memo: `Bulk ${amountTetri > 0 ? "credit" : "debit"} of ${formatTetri(Math.abs(amountTetri))} across ${plan.length} accounts — ${reason} — issued by ${adminUsername}`,
+        refType: "user",
+        // No single refId: the target is a set. The batch is findable by its
+        // idempotency key and by the memo, and every affected player's own
+        // history shows their entry against this one transaction.
+        idempotencyKey: `admin-bulk-adjust:${reference}`,
+        entries: sweepEntries(plan),
+      }),
+    { timeout: BULK_TX_TIMEOUT_MS, isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+  );
+
+  const after = await cashBalancesFor(userIds);
+  const totals = summarise(plan);
+  return {
+    amountTetri,
+    affectedCount: plan.length,
+    netTetri: totals.netTetri,
+    grossTetri: totals.grossTetri,
+    rows: plan.map((row) => ({
+      userId: row.userId,
+      username: row.username,
+      balanceBeforeTetri: row.balanceBeforeTetri,
+      balanceAfterTetri: after.get(row.userId) ?? 0,
+    })),
+    maxAccounts: BULK_BALANCE_MAX_ACCOUNTS,
+    alreadyApplied: alreadyPosted === true,
+  };
+}
+
+export interface ResetAllUsersFilters {
+  /**
+   * Include accounts with role ADMIN. Defaults to FALSE, and the default is the
+   * whole point: an operator resetting the user base almost never means "and
+   * wipe my own balance too", and discovering otherwise afterwards is not
+   * recoverable without a hand-written correction.
+   */
+  includeAdmins?: boolean;
+  /**
+   * Include bot accounts. Defaults to FALSE. Bot balances are minted from
+   * treasury when a bot is seated and swept back when its event ends, so a bot
+   * holding the signup grant is money nothing will ever settle — the sweep
+   * would create a treasury drift that surfaces weeks later as an unexplained
+   * hole.
+   */
+  includeBots?: boolean;
+}
+
+/**
+ * The ONE predicate that decides who a reset-all touches.
+ *
+ * Shared by the preview and the sweep on purpose. These are two code paths
+ * producing numbers an operator compares — "47 accounts" in the dialog, then
+ * "51 accounts reset" in the result — and the moment they can select
+ * differently, the confirmation dialog becomes a guess presented as a fact.
+ * There must be exactly one copy of this, and this is it.
+ *
+ * Suspended accounts are deliberately NOT excluded: their balance is as real as
+ * anyone's, and leaving them out would mean a banned account quietly kept a
+ * balance the sweep was supposed to have cleared.
+ */
+function resetAllWhere(filters: ResetAllUsersFilters): Prisma.UserWhereInput {
+  const where: Prisma.UserWhereInput = {};
+  if (!filters.includeAdmins) where.role = { not: "ADMIN" };
+  if (!filters.includeBots) where.isBot = false;
+  return where;
+}
+
+/** Build the movement plan for a reset-all, using the shared predicate. */
+async function planResetAll(filters: ResetAllUsersFilters) {
+  const users = await prisma.user.findMany({
+    where: resetAllWhere(filters),
+    select: { id: true, username: true },
+  });
+  const balances = await cashBalancesFor(users.map((u) => u.id));
+
+  const plan: PlannedDelta[] = [];
+  for (const user of users) {
+    const balanceBeforeTetri = balances.get(user.id) ?? 0;
+    const deltaTetri = SIGNUP_CREDIT_TETRI - balanceBeforeTetri;
+    // Accounts already sitting on the grant are counted but never posted: the
+    // ledger rejects zero-amount entries, and rightly so — "nothing happened"
+    // is not a movement of money and does not belong in the wallet history.
+    if (deltaTetri !== 0) plan.push({ userId: user.id, username: user.username, balanceBeforeTetri, deltaTetri });
+  }
+  return { eligibleCount: users.length, plan };
+}
+
+export interface ResetAllUsersPreview {
+  targetTetri: number;
+  /** Accounts the filters select, whether or not they need to move. */
+  eligibleCount: number;
+  /** Of those, how many would actually be written. This is the affected count. */
+  affectedCount: number;
+  alreadyAtTargetCount: number;
+  /** Signed: positive means treasury would mint this much into player wallets. */
+  netTetri: number;
+  /** Sum of the absolute movements, regardless of direction. */
+  grossTetri: number;
+  creditedCount: number;
+  debitedCount: number;
+  includeAdmins: boolean;
+  includeBots: boolean;
+  maxAccounts: number;
+  /**
+   * True when the sweep would REFUSE. It does not mean "the first 500 will be
+   * done" — nothing is done. The console must say so before the operator
+   * commits, because the alternative is discovering it in an error dialog
+   * after typing a confirmation phrase.
+   */
+  overCap: boolean;
+}
+
+/**
+ * What resetAllUsersToSignupBalance WOULD do, without doing any of it.
+ *
+ * Exists so the confirmation dialog can state real numbers. "This will reset
+ * all users" is a sentence an operator can click through on autopilot; "this
+ * will move ₾1,284.50 across 213 accounts" is one they read. The dialog quoting
+ * a guess would be worse than quoting nothing, which is why this runs the same
+ * predicate and the same arithmetic as the sweep rather than approximating it.
+ *
+ * Read-only and side-effect free — safe to re-run on every toggle of the
+ * filters, and safe for a GET. It does read the whole eligible set rather than
+ * counting, because the net movement genuinely depends on every individual
+ * balance; that is a cheap wide SELECT of two columns, unlike the writes the
+ * cap exists to bound.
+ */
+export async function previewResetAllUsers(
+  filters: ResetAllUsersFilters = {}
+): Promise<ResetAllUsersPreview> {
+  const includeAdmins = filters.includeAdmins === true;
+  const includeBots = filters.includeBots === true;
+  const { eligibleCount, plan } = await planResetAll({ includeAdmins, includeBots });
+  const totals = summarise(plan);
+
+  return {
+    targetTetri: SIGNUP_CREDIT_TETRI,
+    eligibleCount,
+    affectedCount: plan.length,
+    alreadyAtTargetCount: eligibleCount - plan.length,
+    ...totals,
+    includeAdmins,
+    includeBots,
+    maxAccounts: BULK_BALANCE_MAX_ACCOUNTS,
+    overCap: plan.length > BULK_BALANCE_MAX_ACCOUNTS,
+  };
+}
+
+export interface ResetAllUsersInput extends ResetAllUsersFilters {
+  adminUsername: string;
+  reason: string;
+}
+
+export interface ResetAllUsersResult extends ResetAllUsersPreview {
+  /** True when an identical sweep had already posted — nothing moved twice. */
+  alreadyApplied: boolean;
+}
+
+/**
+ * Reset every selected account to the signup grant, in one transaction.
+ *
+ * The nuclear option, and it is shaped by four things the operator asked for
+ * explicitly:
+ *
+ *   · ONE database transaction for the whole sweep. Every account resets or
+ *     none does. That is why the cap above exists: the transaction holds a lock
+ *     on treasury for its whole life, and the platform cannot move money until
+ *     it commits.
+ *   · Admins are EXCLUDED unless includeAdmins is explicitly true, and bots are
+ *     excluded by default. Both defaults are false here, not merely documented
+ *     as false, so a caller that forgets the flags gets the safe sweep.
+ *   · Every change goes through the wallet ledger as a proper balanced
+ *     transaction. Nothing here writes Account.balanceTetri.
+ *   · It reports the affected count AND the total tetri moved, so the result is
+ *     checkable against the preview the operator confirmed.
+ *
+ * The target is SIGNUP_CREDIT_TETRI, read rather than restated, so "reset"
+ * always means "what a new player starts with" even if that figure changes. It
+ * moves in BOTH directions: an account below the grant is topped up and one
+ * above it is drawn down, which is what "reset" has to mean to be worth having.
+ *
+ * Cash only. Vault credits are a separate economy and are left alone — clearing
+ * them as a side effect of a cash reset would destroy something players earned.
+ *
+ * The idempotency key carries the filters and a one-minute bucket, the same
+ * trick resetDemoBalance uses: a double-click collapses into one posting, a
+ * deliberate second sweep later still works, and a sweep WITH bots is correctly
+ * a different operation from one without.
+ */
+export async function resetAllUsersToSignupBalance(
+  input: ResetAllUsersInput
+): Promise<ResetAllUsersResult> {
+  const includeAdmins = input.includeAdmins === true;
+  const includeBots = input.includeBots === true;
+  const { adminUsername, reason } = input;
+
+  if (!reason.trim()) {
+    throw new Error("A reason is required — it is written into the ledger.");
+  }
+
+  const { eligibleCount, plan } = await planResetAll({ includeAdmins, includeBots });
+
+  // REFUSE over the cap; never process a prefix. An operator told "500 of your
+  // 900 accounts were reset" has a user base in two different states and no
+  // record of which account is in which — see rule 3 at the top of this section.
+  if (plan.length > BULK_BALANCE_MAX_ACCOUNTS) {
+    throw new Error(
+      `${plan.length} accounts would have to be written and a single sweep is capped at ${BULK_BALANCE_MAX_ACCOUNTS}. Nothing was moved — the whole sweep runs in one transaction that freezes every money operation on the platform while it is open, so it refuses rather than resetting part of the user base. Narrow the filters or run this as a maintenance-window migration.`
+    );
+  }
+
+  const totals = summarise(plan);
+  const shape: ResetAllUsersPreview = {
+    targetTetri: SIGNUP_CREDIT_TETRI,
+    eligibleCount,
+    affectedCount: plan.length,
+    alreadyAtTargetCount: eligibleCount - plan.length,
+    ...totals,
+    includeAdmins,
+    includeBots,
+    maxAccounts: BULK_BALANCE_MAX_ACCOUNTS,
+    overCap: false,
+  };
+
+  // Nothing to post is a successful no-op, not an error — and it must return
+  // before the ledger sees it, because a transaction with no entries is not a
+  // transaction and postTransactionIn would refuse it.
+  if (plan.length === 0) {
+    return { ...shape, alreadyApplied: false };
+  }
+
+  const minuteBucket = Math.floor(Date.now() / 60_000);
+  const { alreadyPosted } = await prisma.$transaction(
+    async (db) =>
+      postTransactionIn(db, {
+        // ADJUSTMENT, not ADMIN_ADJUSTMENT: a reset to the signup grant is
+        // machinery — the same category as bot funding — and folding it in with
+        // discretionary operator movements would bury the ones an auditor is
+        // hunting for.
+        kind: "ADJUSTMENT",
+        memo: `Reset ${plan.length} accounts to the ${formatTetri(SIGNUP_CREDIT_TETRI)} signup grant — ${reason} — issued by ${adminUsername}`,
+        refType: "system",
+        idempotencyKey: `admin-reset-all:${includeAdmins ? "a" : "-"}${includeBots ? "b" : "-"}:${minuteBucket}`,
+        entries: sweepEntries(plan),
+      }),
+    { timeout: BULK_TX_TIMEOUT_MS, isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+  );
+
+  return { ...shape, alreadyApplied: alreadyPosted === true };
 }
 
 // ─────────────────────────── System ops ───────────────────────────

@@ -1,9 +1,21 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { createHash, randomInt } from "node:crypto";
 import { z } from "zod";
 import { prisma } from "@gamearena/db";
 import { lariToTetri } from "@gamearena/shared";
-import { requireAdmin } from "@/lib/auth";
+import { withAdminAudit } from "@/lib/with-admin-audit";
+
+/**
+ * Admin-only: the live-ops desk — schedule an event, post a notice, run a
+ * promotion.
+ *
+ * Three creations behind one endpoint, and three separate audit actions, because
+ * they are three different kinds of consequence: a tournament can take real
+ * entry money, an announcement is player-facing copy, a happy hour changes the
+ * rake for everybody who plays during it. Filing them under one name would make
+ * "what did we run last weekend" unanswerable without reading every row.
+ */
+export const dynamic = "force-dynamic";
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
@@ -46,49 +58,108 @@ const schema = z.discriminatedUnion("type", [
   }),
 ]);
 
-export async function POST(req: NextRequest) {
-  await requireAdmin();
-  const parsed = schema.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) return NextResponse.json({ error: "Invalid" }, { status: 400 });
-  const d = parsed.data;
+export const POST = withAdminAudit(
+  // "liveops.create" is the fallback for a body that matched none of the three
+  // members of the union; a parsed body renames itself to the exact creation
+  // below. targetType is left to each branch, because a tournament is a
+  // tournament and the other two are platform content.
+  { action: "liveops.create", targetType: "system" },
+  async ({ req, audit }) => {
+    const parsed = schema.safeParse(await req.json().catch(() => null));
+    if (!parsed.success) return NextResponse.json({ error: "Invalid" }, { status: 400 });
+    const d = parsed.data;
 
-  if (d.type === "tournament") {
-    const game = await prisma.game.findUnique({ where: { key: d.gameKey } });
-    if (!game) return NextResponse.json({ error: "Unknown game" }, { status: 400 });
-    const startsAt = new Date(Date.now() + d.startsInHours * 3_600_000);
-    const seed = randomInt(100_000, 1_000_000).toString();
-    await prisma.tournament.create({
-      data: {
+    if (d.type === "tournament") {
+      audit.action("liveops.create-tournament");
+      audit.label(d.name);
+      // Everything that decides what this event costs and pays, recorded before
+      // it exists — an event created with the wrong entry fee is corrected by
+      // deleting it, and then the only record of what was asked for is this row.
+      audit.meta({
         name: d.name,
-        gameId: game.id,
+        gameKey: d.gameKey,
         entryTetri: lariToTetri(d.entryLari),
         guaranteeTetri: lariToTetri(d.guaranteeLari),
-        prizeStructure: PRIZE_PRESETS[d.prizes]!,
         capacity: d.capacity,
-        startsAt,
-        durationS: d.durationMin * 60,
-        seed,
-        seedHash: sha256(seed),
-        status: d.startsInHours <= 0 ? "RUNNING" : "SCHEDULED",
-      },
-    });
-    return NextResponse.json({ ok: true });
-  }
+        startsInHours: d.startsInHours,
+        durationMin: d.durationMin,
+        prizes: d.prizes,
+      });
 
-  if (d.type === "announcement") {
-    await prisma.announcement.create({ data: { title: d.title, body: d.body, active: true } });
-    return NextResponse.json({ ok: true });
-  }
+      const game = await prisma.game.findUnique({ where: { key: d.gameKey } });
+      if (!game) return NextResponse.json({ error: "Unknown game" }, { status: 400 });
+      const startsAt = new Date(Date.now() + d.startsInHours * 3_600_000);
+      const seed = randomInt(100_000, 1_000_000).toString();
+      const created = await prisma.tournament.create({
+        data: {
+          name: d.name,
+          gameId: game.id,
+          entryTetri: lariToTetri(d.entryLari),
+          guaranteeTetri: lariToTetri(d.guaranteeLari),
+          prizeStructure: PRIZE_PRESETS[d.prizes]!,
+          capacity: d.capacity,
+          startsAt,
+          durationS: d.durationMin * 60,
+          seed,
+          seedHash: sha256(seed),
+          status: d.startsInHours <= 0 ? "RUNNING" : "SCHEDULED",
+        },
+        // Selected only so the audit row can name what was created. The response
+        // below is unchanged — the console reloads its own list.
+        select: { id: true, name: true, status: true },
+      });
+      // The id goes in the metadata rather than in targetId. One config declares
+      // one targetType for the whole route, and this endpoint creates three
+      // different kinds of thing — filing a tournament id under targetType
+      // "system" would be worse than not filing it, because the console reads
+      // the pair together. The dedicated /tournaments/create* routes, which is
+      // what the console actually calls to run an event, do file against the
+      // tournament properly.
+      audit.meta({
+        tournamentId: created.id,
+        status: created.status,
+        startsAt: startsAt.toISOString(),
+      });
+      return NextResponse.json({ ok: true });
+    }
 
-  // happyHour
-  const startsAt = new Date(Date.now() + d.startsInHours * 3_600_000);
-  await prisma.happyHour.create({
-    data: {
+    if (d.type === "announcement") {
+      audit.action("liveops.create-announcement");
+      audit.label(d.title);
+      // The copy itself: an announcement can be edited or deleted, and "what did
+      // it actually say when it went out" is the whole question afterwards.
+      audit.meta({ title: d.title, body: d.body });
+      const created = await prisma.announcement.create({
+        data: { title: d.title, body: d.body, active: true },
+        select: { id: true },
+      });
+      audit.meta({ announcementId: created.id });
+      return NextResponse.json({ ok: true });
+    }
+
+    // happyHour
+    audit.action("liveops.create-happy-hour");
+    audit.label(d.name);
+    const startsAt = new Date(Date.now() + d.startsInHours * 3_600_000);
+    const endsAt = new Date(startsAt.getTime() + d.durationMin * 60_000);
+    // A rake discount is revenue given away for a window. The window and the
+    // size of the discount are the two facts a finance question will ask for.
+    audit.meta({
       name: d.name,
-      startsAt,
-      endsAt: new Date(startsAt.getTime() + d.durationMin * 60_000),
+      startsAt: startsAt.toISOString(),
+      endsAt: endsAt.toISOString(),
       rakeDiscountBps: Math.round(d.rakeDiscountPct * 100),
-    },
-  });
-  return NextResponse.json({ ok: true });
-}
+    });
+    const created = await prisma.happyHour.create({
+      data: {
+        name: d.name,
+        startsAt,
+        endsAt,
+        rakeDiscountBps: Math.round(d.rakeDiscountPct * 100),
+      },
+      select: { id: true },
+    });
+    audit.meta({ happyHourId: created.id });
+    return NextResponse.json({ ok: true });
+  }
+);

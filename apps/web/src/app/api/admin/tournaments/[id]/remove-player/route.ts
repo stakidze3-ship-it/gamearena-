@@ -1,9 +1,9 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { z } from "zod";
 import { removePlayerFromTournament } from "@gamearena/db";
 import { formatTetri } from "@gamearena/shared";
-import { requireAdmin } from "@/lib/auth";
 import { adminOpsErrorResponse, readJsonBody } from "@/lib/admin-ops-http";
+import { auditTournamentLabel, withAdminAudit } from "@/lib/with-admin-audit";
 
 /**
  * Admin-only: take one entrant out of a tournament that has not been drawn,
@@ -25,26 +25,44 @@ const schema = z.object({
   userId: z.string().min(1, "A player is required"),
 });
 
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  await requireAdmin();
-  const { id } = await params;
+export const POST = withAdminAudit<{ id: string }>(
+  // The row is filed against the TOURNAMENT, because that is the thing an
+  // operator reviews afterwards ("what was done to this event"). The player who
+  // was pulled out goes in the metadata below rather than in targetId, which
+  // holds one id and would otherwise have to choose between the two.
+  { action: "tournament.remove-player", targetType: "tournament", targetIdParam: "id" },
+  async ({ req, params, audit }) => {
+    const { id } = params;
 
-  const parsed = schema.safeParse(await readJsonBody(req));
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Invalid player" },
-      { status: 400 }
-    );
+    const parsed = schema.safeParse(await readJsonBody(req));
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: parsed.error.issues[0]?.message ?? "Invalid player" },
+        { status: 400 }
+      );
+    }
+
+    // Recorded before the removal so a refusal — most likely "the bracket has
+    // already been drawn" — still records which player somebody was trying to
+    // pull out of which event.
+    audit.meta({ userId: parsed.data.userId });
+    await auditTournamentLabel(audit, id);
+
+    try {
+      const result = await removePlayerFromTournament(id, parsed.data.userId);
+
+      // `removed: false` is a successful no-op, and the row has to say so: two
+      // rows for the same player where only one moved money would otherwise read
+      // as a double refund to anyone reviewing the event later.
+      audit.meta({ removed: result.removed, refundedTetri: result.refundedTetri });
+
+      const message = result.removed
+        ? `Entry removed · ${formatTetri(result.refundedTetri)} refunded to the player.`
+        : "That player is not in this tournament — nothing was refunded.";
+
+      return NextResponse.json({ ok: true, ...result, message });
+    } catch (err) {
+      return adminOpsErrorResponse(err, { fallback: "Could not remove that player" });
+    }
   }
-
-  try {
-    const result = await removePlayerFromTournament(id, parsed.data.userId);
-    const message = result.removed
-      ? `Entry removed · ${formatTetri(result.refundedTetri)} refunded to the player.`
-      : "That player is not in this tournament — nothing was refunded.";
-
-    return NextResponse.json({ ok: true, ...result, message });
-  } catch (err) {
-    return adminOpsErrorResponse(err, { fallback: "Could not remove that player" });
-  }
-}
+);

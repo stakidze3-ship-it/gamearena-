@@ -1,8 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { forceFinishMatch } from "@gamearena/db";
-import { requireAdmin } from "@/lib/auth";
 import { adminOpsErrorResponse } from "@/lib/admin-ops-http";
 import { refuseIfNotBracketMatch } from "@/lib/admin-match-target";
+import { auditBracketMatchLabel, withAdminAudit } from "@/lib/with-admin-audit";
 
 /**
  * Admin-only: resolve a stalled bracket match on the scores already in.
@@ -21,25 +21,50 @@ import { refuseIfNotBracketMatch } from "@/lib/admin-match-target";
  */
 export const dynamic = "force-dynamic";
 
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  await requireAdmin();
-  const { id } = await params;
+export const POST = withAdminAudit<{ id: string }>(
+  // Two endpoints decide a match, and they are logged under two names on
+  // purpose: an audit has to be able to tell "the operator hurried the clock"
+  // apart from "the operator overrode the result", and one action name for both
+  // would answer neither question. See ../declare-winner.
+  { action: "match.force-finish", targetType: "match", targetIdParam: "id" },
+  async ({ params, audit }) => {
+    const { id } = params;
 
-  const wrongKind = await refuseIfNotBracketMatch(id);
-  if (wrongKind) return wrongKind;
+    // Read before the match is decided, and above all before a later bracket
+    // reset deletes the row: without the round and slot copied in now, a forced
+    // result becomes unattributable the moment somebody redraws.
+    await auditBracketMatchLabel(audit, id);
 
-  try {
-    const result = await forceFinishMatch(id);
-    const message =
-      `${result.winnerUsername} takes the ${result.roundLabel} on ${result.aScore ?? 0}–${result.bScore ?? 0}` +
-      (result.advancedTo
-        ? ` · advanced to round ${result.advancedTo.round}, slot ${result.advancedTo.slot}.`
-        : " · that was the last match of the bracket.");
+    const wrongKind = await refuseIfNotBracketMatch(id);
+    if (wrongKind) return wrongKind;
 
-    return NextResponse.json({ ok: true, ...result, message });
-  } catch (err) {
-    // Includes the case where the tournament resolved this match itself between
-    // the operator seeing it and pressing the button — a 409, not a failure.
-    return adminOpsErrorResponse(err, { fallback: "Could not finish that match" });
+    try {
+      const result = await forceFinishMatch(id);
+
+      // Who won and on what scores. The scores matter specifically on this
+      // route: the claim it makes is that the engine's ordinary rule was
+      // applied, and these are the numbers that rule was applied to.
+      audit.meta({
+        tournamentId: result.tournamentId,
+        round: result.round,
+        winnerUserId: result.winnerUserId,
+        winnerUsername: result.winnerUsername,
+        aScore: result.aScore,
+        bScore: result.bScore,
+        advancedTo: result.advancedTo,
+      });
+
+      const message =
+        `${result.winnerUsername} takes the ${result.roundLabel} on ${result.aScore ?? 0}–${result.bScore ?? 0}` +
+        (result.advancedTo
+          ? ` · advanced to round ${result.advancedTo.round}, slot ${result.advancedTo.slot}.`
+          : " · that was the last match of the bracket.");
+
+      return NextResponse.json({ ok: true, ...result, message });
+    } catch (err) {
+      // Includes the case where the tournament resolved this match itself between
+      // the operator seeing it and pressing the button — a 409, not a failure.
+      return adminOpsErrorResponse(err, { fallback: "Could not finish that match" });
+    }
   }
-}
+);

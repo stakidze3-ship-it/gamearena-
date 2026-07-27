@@ -1,8 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { resetTournament } from "@gamearena/db";
 import { formatTetri } from "@gamearena/shared";
-import { requireAdmin } from "@/lib/auth";
 import { adminOpsErrorResponse } from "@/lib/admin-ops-http";
+import { auditTournamentLabel, withAdminAudit } from "@/lib/with-admin-audit";
 
 /**
  * Admin-only: throw the bracket away and put the event back in the lobby.
@@ -21,20 +21,35 @@ import { adminOpsErrorResponse } from "@/lib/admin-ops-http";
  */
 export const dynamic = "force-dynamic";
 
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  await requireAdmin();
-  const { id } = await params;
+export const POST = withAdminAudit<{ id: string }>(
+  { action: "tournament.reset", targetType: "tournament", targetIdParam: "id" },
+  async ({ params, audit }) => {
+    const { id } = params;
 
-  try {
-    const result = await resetTournament(id);
-    const message =
-      `Bracket cleared · ${result.deletedMatches} match(es) deleted · ` +
-      // Said explicitly because it is the question an operator asks next:
-      // resetting looks destructive, and the money is deliberately untouched.
-      `${result.entryCount} entries and ${formatTetri(result.escrowTetri)} of escrow kept.`;
+    await auditTournamentLabel(audit, id);
 
-    return NextResponse.json({ ok: true, ...result, message });
-  } catch (err) {
-    return adminOpsErrorResponse(err, { fallback: "Could not reset the bracket" });
+    try {
+      const result = await resetTournament(id);
+
+      // deletedMatches is the destroyed part and the two money figures are the
+      // preserved part. Both belong in the row: a reset is the one operation
+      // here that looks like it should have refunded everybody and deliberately
+      // did not, and the row is what settles that question afterwards.
+      audit.meta({
+        deletedMatches: result.deletedMatches,
+        entryCount: result.entryCount,
+        escrowTetri: result.escrowTetri,
+      });
+
+      const message =
+        `Bracket cleared · ${result.deletedMatches} match(es) deleted · ` +
+        // Said explicitly because it is the question an operator asks next:
+        // resetting looks destructive, and the money is deliberately untouched.
+        `${result.entryCount} entries and ${formatTetri(result.escrowTetri)} of escrow kept.`;
+
+      return NextResponse.json({ ok: true, ...result, message });
+    } catch (err) {
+      return adminOpsErrorResponse(err, { fallback: "Could not reset the bracket" });
+    }
   }
-}
+);

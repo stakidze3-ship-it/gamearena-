@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@gamearena/db";
+import { prisma, recordAdminAction } from "@gamearena/db";
 import { adminClaimEligibility } from "@/lib/admin-claim";
 import { getCurrentUser } from "@/lib/auth";
 import { createSessionToken, setSessionCookie } from "@/lib/session";
@@ -43,6 +43,24 @@ export async function POST() {
   // claim button look like it had done nothing at all.
   const token = await createSessionToken({ sub: user.id, un: user.username, rl: "ADMIN" });
   await setSessionCookie(token);
+
+  // Log it. This route cannot use withAdminAudit — the caller is by definition
+  // NOT an admin when they arrive, so the wrapper's requireAdmin would refuse
+  // the one action it most needs to record. Someone granting themselves the
+  // ability to move every balance on the platform is the single most
+  // audit-worthy event in the system, and it was leaving no trace at all.
+  await recordAdminAction({
+    adminUserId: user.id,
+    adminUsername: user.username,
+    action: "admin.self-claim",
+    targetType: "user",
+    targetId: user.id,
+    targetLabel: user.username,
+    reason: eligibility.reason === "no-admin-yet"
+      ? "First admin on a deployment with none"
+      : "Account is on the owner list",
+    metadata: { eligibility: eligibility.reason, adminCountBefore: eligibility.adminCount },
+  });
 
   return NextResponse.json({ ok: true, username: user.username });
 }
