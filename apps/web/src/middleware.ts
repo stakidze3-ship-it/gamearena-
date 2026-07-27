@@ -38,9 +38,21 @@ export async function middleware(req: NextRequest) {
     url.searchParams.set("next", pathname);
     return NextResponse.redirect(url);
   }
-  if (pathname.startsWith("/admin") && session.rl !== "ADMIN") {
-    return NextResponse.redirect(new URL("/lobby", req.url));
-  }
+  // Deliberately NO role check here.
+  //
+  // This used to redirect anyone whose token did not say ADMIN away from
+  // /admin, and it was wrong twice over. The role is baked into the JWT at
+  // sign-in, so the check reads a snapshot that can be hours stale: an account
+  // promoted to admin kept being bounced until it happened to log in again,
+  // with nothing on screen explaining why. And because middleware runs before
+  // any page code, the admin layout never got the chance to offer an eligible
+  // owner the button that would have granted them the role — so the Admin tab
+  // in the top bar navigated nowhere and looked broken.
+  //
+  // Authorisation for /admin belongs where the live role can actually be read:
+  // the admin layout is a server component, it queries the database on every
+  // request, and it decides between the console, the claim screen and a
+  // redirect. Middleware's job here is only "is there a session at all".
   return NextResponse.next();
 }
 
